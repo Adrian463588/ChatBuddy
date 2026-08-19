@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "artifacts": [
+    {
+      "id": "gemma-4-e2b-it-q4-0",
+      "displayName": "Gemma 4 E2B IT Q4_0",
+      "url": "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/b4243c156154b6dca9324415f8c7ccc098b4aed1/gemma-4-E2B-it-Q4_0.gguf",
+      "revision": "b4243c156154b6dca9324415f8c7ccc098b4aed1",
+      "sizeBytes": 2841481184,
+      "sha256": "8e30dff3ac4c8434c49a7036fa15564bdbb6044e42bf04550bf1a096ad7e6a52",
+      "license": "Apache-2.0",
+      "abi": ["arm64-v8a", "armeabi-v7a"],
+      "storageKind": "SAF_PERSISTENT"
+    },
+    {
+      "id": "all-minilm-l6-v2-qint8-arm64",
+      "displayName": "MiniLM L6 v2 INT8 ARM64",
+      "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/826711e54e001c83835913827a843d8dd0a1def9/onnx/model_qint8_arm64.onnx",
+      "revision": "826711e54e001c83835913827a843d8dd0a1def9",
+      "sizeBytes": 23026053,
+      "sha256": "4278337fd0ff3c68bfb6291042cad8ab363e1d9fbc43dcb499fe91c871902474",
+      "license": "Apache-2.0",
+      "abi": ["arm64-v8a"],
+      "storageKind": "SAF_PERSISTENT"
+    },
+    {
+      "id": "all-minilm-l6-v2-vocab",
+      "displayName": "MiniLM WordPiece vocabulary",
+      "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/826711e54e001c83835913827a843d8dd0a1def9/vocab.txt",
+      "revision": "826711e54e001c83835913827a843d8dd0a1def9",
+      "sizeBytes": 231508,
+      "sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+      "license": "Apache-2.0",
+      "abi": ["any"],
+      "storageKind": "SAF_PERSISTENT"
+    },
+    {
+      "id": "whisper-base-q5-1",
+      "displayName": "Whisper Base Q5_1",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/f281eb45af861ab5e5297d23694b7d46e090c02c/ggml-base-q5_1.bin",
+      "revision": "f281eb45af861ab5e5297d23694b7d46e090c02c",
+      "sizeBytes": 59707625,
+      "sha256": "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
+      "license": "MIT",
+      "abi": ["arm64-v8a", "armeabi-v7a"],
+      "storageKind": "SAF_PERSISTENT"
+    }
+  ]
+}

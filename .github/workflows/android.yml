@@ -1,0 +1,43 @@
+name: Android checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android toolchain
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Repository hygiene
+        shell: bash
+        run: |
+          git diff --check
+          if git grep -n -E 'BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|AIza[0-9A-Za-z_-]{20,}|ghp_[0-9A-Za-z]{20,}'; then
+            echo "Potential credential detected"
+            exit 1
+          fi
+          if git ls-files | grep -E '(^docs/|\.gguf$|\.onnx$|\.bin$|\.jks$|\.keystore$|(^|/)local\.properties$)'; then
+            echo "Reference, model, or credential artifact is tracked"
+            exit 1
+          fi
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest
+      - name: Android lint
+        run: ./gradlew lintDebug
+      - name: Native ABI build
+        run: ./gradlew externalNativeBuildDebug
+      - name: Debug APK
+        run: ./gradlew assembleDebug

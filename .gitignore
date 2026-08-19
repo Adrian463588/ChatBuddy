@@ -1,0 +1,38 @@
+# Android/Gradle
+.gradle/
+local.properties
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+
+# Secrets and signing
+*.jks
+*.keystore
+keystore.properties
+google-services.json
+service-account*.json
+*.pem
+*.p12
+.env*
+
+# Local AI artifacts and generated previews
+*.gguf
+*.bin
+*.onnx
+*.tflite
+*.safetensors
+.native-src/
+*.png
+*.jpg
+*.jpeg
+preview/
+!preview/
+!preview/chatbuddy-device.png
+
+# Supplied reference projects are read-only and never part of the product repo.
+/docs/
