@@ -158,7 +158,9 @@ private fun ChatTab(state: HomeUiState, viewModel: HomeViewModel, chooseFolder: 
     }
     ModelGate(
         status = llm?.status ?: ModelStatus.Unavailable,
-        onDownload = { llm?.artifact?.id?.let(viewModel::downloadModel) }
+        onDownload = { llm?.artifact?.id?.let(viewModel::downloadModel) },
+        onPause = { llm?.artifact?.id?.let(viewModel::pauseModel) },
+        modelName = llm?.artifact?.displayName
     ) {
         ChatContent(state, viewModel)
     }
@@ -523,23 +525,38 @@ private fun ModelCard(model: com.chatbuddy.domain.model.ModelState, viewModel: H
             Text(model.artifact.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("${model.artifact.sizeBytes / 1_000_000} MB · ${model.artifact.license}", style = MaterialTheme.typography.bodySmall)
             when (status) {
+                is ModelStatus.Queued -> {
+                    Text("Download scheduled · waiting for network")
+                    OutlinedButton(onClick = { viewModel.pauseModel(model.artifact.id) }) { Text("Pause download") }
+                }
                 is ModelStatus.Downloading -> {
-                    val progress = status.downloadedBytes.toFloat() / status.totalBytes
+                    val progress = if (status.totalBytes > 0L) {
+                        (status.downloadedBytes.toFloat() / status.totalBytes).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("${(progress * 100).toInt()}%", modifier = Modifier.weight(1f))
-                        OutlinedButton(onClick = { viewModel.pauseModel(model.artifact.id) }) { Text("Pause") }
+                        OutlinedButton(onClick = { viewModel.pauseModel(model.artifact.id) }) { Text("Pause download") }
                     }
                 }
-                is ModelStatus.Paused -> Button(onClick = { viewModel.downloadModel(model.artifact.id) }) { Text("Resume") }
-                is ModelStatus.Verifying -> Text("Verifying checksum")
+                is ModelStatus.Paused -> {
+                    Text("${status.downloadedBytes / 1_000_000} MB downloaded")
+                    Button(onClick = { viewModel.downloadModel(model.artifact.id) }) { Text("Resume download") }
+                }
+                is ModelStatus.Verifying -> {
+                    Text("Verifying checksum")
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
                 is ModelStatus.Ready -> Text("Ready · ${model.artifact.storageKind}")
                 is ModelStatus.Error -> {
                     Text(status.message, color = MaterialTheme.colorScheme.error)
-                    Button(onClick = { viewModel.downloadModel(model.artifact.id) }) { Text("Retry") }
+                    Button(onClick = { viewModel.downloadModel(model.artifact.id) }) { Text("Retry download") }
                 }
-                ModelStatus.NotInstalled, ModelStatus.Unavailable ->
+                ModelStatus.NotInstalled ->
                     Button(onClick = { viewModel.downloadModel(model.artifact.id) }) { Text("Download") }
+                ModelStatus.Unavailable -> Text("Unavailable on this device")
             }
         }
     }

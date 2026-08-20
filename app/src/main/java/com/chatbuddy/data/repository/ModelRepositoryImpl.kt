@@ -14,6 +14,7 @@ import com.chatbuddy.data.model.ModelManifestDataSource
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.ModelArtifact
 import com.chatbuddy.domain.model.ModelState
+import com.chatbuddy.domain.model.ModelStatus
 import com.chatbuddy.domain.repository.ModelRepository
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
@@ -41,18 +42,29 @@ class ModelRepositoryImpl @Inject constructor(
         val artifact = stateStore.find(artifactId)
             ?: return AppResult.Error("Unknown model artifact")
         if (safStore.treeUri() == null) {
-            return AppResult.Error("Choose a SAF storage folder before downloading")
+            val message = "Choose a SAF storage folder before downloading"
+            stateStore.update(artifact.id, ModelStatus.Error(message))
+            return AppResult.Error(message)
         }
         val request = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setInputData(workDataOf(DownloadWorker.KEY_ARTIFACT_ID to artifact.id))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
-        workManager.enqueueUniqueWork(
-            "chatbuddy-download-${artifact.id}",
-            ExistingWorkPolicy.KEEP,
-            request
+        return runCatching {
+            workManager.enqueueUniqueWork(
+                "chatbuddy-download-${artifact.id}",
+                ExistingWorkPolicy.KEEP,
+                request
+            )
+            stateStore.update(artifact.id, ModelStatus.Queued(artifact.sizeBytes))
+        }.fold(
+            onSuccess = { AppResult.Success(Unit) },
+            onFailure = { error ->
+                val message = "Unable to schedule model download"
+                stateStore.update(artifact.id, ModelStatus.Error(message))
+                AppResult.Error(message, error)
+            }
         )
-        return AppResult.Success(Unit)
     }
 
     override suspend fun pause(artifactId: String): AppResult<Unit> {

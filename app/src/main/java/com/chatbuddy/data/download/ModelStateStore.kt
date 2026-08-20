@@ -34,9 +34,15 @@ class ModelStateStore @Inject constructor(
             states.map { state ->
                 if (state.artifact.id != id) return@map state
                 val status = state.status
-                if (status is ModelStatus.Downloading) {
-                    state.copy(status = ModelStatus.Paused(status.downloadedBytes, status.totalBytes))
-                } else state
+                when (status) {
+                    is ModelStatus.Downloading -> state.copy(
+                        status = ModelStatus.Paused(status.downloadedBytes, status.totalBytes)
+                    )
+                    is ModelStatus.Queued -> state.copy(
+                        status = ModelStatus.Paused(0L, status.totalBytes)
+                    )
+                    else -> state
+                }
             }
         }
     }

@@ -15,6 +15,7 @@ Preview PNG di atas harus berasal dari APK ChatBuddy yang dijalankan pada device
 | Area | Status | Batas bukti saat ini |
 | --- | --- | --- |
 | Compose responsive shell, ModelGate, navigation, persona | Implemented | Unit/UI/device gates dijalankan terpisah |
+| Model download action and lifecycle | Implemented | Queued, progress, pause/resume, verifying, retry, and error are rendered inline; large model transfer is user-triggered |
 | SAF folder, persistable permission, `.tmp`, Range, checkpoint, checksum, atomic rename | Implemented | Resume/uninstall persistence di device masih perlu sesi model nyata |
 | MiniLM INT8 ONNX + WordPiece vocabulary | Implemented | Memerlukan dua artifact SAF yang lolos checksum |
 | TXT/PDF/DOCX bounded streaming, chunk 512 dengan overlap 50 | Implemented | Parser berhenti dengan error nyata bila SAF stream rusak atau melewati 200 MB |
@@ -73,7 +74,7 @@ Network hanya dipakai untuk setup model dan managed ML Kit model delivery. Promp
 Evidence yang valid ditulis sebagai hasil command/device aktual, bukan angka perkiraan. Gate yang tersedia:
 
 - Pure Kotlin: chunk overlap, persona validation, RAG abstain, download state transition.
-- Compose instrumentation: ModelGate unavailable/ready dan aksi download.
+- Compose instrumentation: ModelGate unavailable/ready, queued pause action, and inline download state actions.
 - Android: lint, Kotlin compile, native ABI build, APK install/launch, dan screenshot preview.
 - Pending acceptance: model Gemma nyata, checksum/download resume setelah process kill, sqlite-vec retrieval, Whisper, 200 MB ingestion on device, serta uninstall/reinstall persistence.
 
@@ -91,6 +92,14 @@ Device baseline yang direncanakan: Samsung `SM-G988B`, Android 13 (`RRCN3008VYE`
 - APK debug: 131,333,318 bytes; SHA-256 `31af09d3e5e7c715e4616d337263ed0beeb8bcea4dd82daca524892731e92737`.
 
 Evidence ini membuktikan build, UI shell, navigation, dan launch; tidak membuktikan inferensi atau ingestion tanpa artifact model/runtime yang benar-benar diunduh dan diverifikasi.
+
+### Evidence captured — 2026-08-20
+
+- `:app:compileDebugKotlin` dan `:app:compileDebugAndroidTestKotlin` — pass.
+- `:app:testDebugUnitTest`, `:app:lintDebug`, dan `:app:assembleDebug` — pass.
+- `:app:connectedDebugAndroidTest` — 3/3 pass pada `SM-G988B - 13`, termasuk callback Download dan Pause pada ModelGate.
+- APK debug berhasil dipasang dan cold-launched pada `RRCN3008VYE`; `dumpsys` mengonfirmasi `com.chatbuddy/.MainActivity` sebagai resumed dan smoke log tidak menunjukkan crash aplikasi.
+- Transfer Gemma tidak dimulai otomatis selama smoke karena artifact sekitar 2.84 GB; state dan callback diuji tanpa menggunakan bandwidth/storage pengguna secara diam-diam. Sesi transfer nyata tetap membutuhkan tap pengguna, folder SAF, jaringan, checksum, dan ruang penyimpanan yang cukup.
 
 ## License/provenance
 

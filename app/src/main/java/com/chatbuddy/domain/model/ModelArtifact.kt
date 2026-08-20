@@ -22,6 +22,7 @@ data class ModelArtifact(
 sealed interface ModelStatus {
     data object Unavailable : ModelStatus
     data object NotInstalled : ModelStatus
+    data class Queued(val totalBytes: Long) : ModelStatus
     data class Downloading(val downloadedBytes: Long, val totalBytes: Long) : ModelStatus
     data class Paused(val downloadedBytes: Long, val totalBytes: Long) : ModelStatus
     data class Verifying(val downloadedBytes: Long, val totalBytes: Long) : ModelStatus

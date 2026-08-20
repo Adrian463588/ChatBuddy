@@ -36,3 +36,12 @@ This follows Android's exposed-dropdown guidance, which pairs a read-only text f
 
 - https://developer.android.com/reference/kotlin/androidx/compose/material3/ExposedDropdownMenuBox.composable
 - https://support.google.com/translate/answer/6142478?co=GENIE.Platform%3DAndroid&hl=en
+
+## ADR-009 — model download state is actionable in the feature gate
+
+Starting a model download immediately moves the artifact to `Queued` after WorkManager accepts the unique work. `ModelGate` then renders the real lifecycle inline: queued, downloading with bytes and percentage, paused, verifying, and error. Pause, resume, and retry are wired to the repository; the feature no longer emits a success toast that leaves the user without context. Transfer progress continues to come from the SAF download worker and checksum verification remains the completion boundary.
+
+This follows Android's WorkManager guidance for observing intermediate progress and Compose guidance for determinate and indeterminate progress indicators:
+
+- https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/observe
+- https://developer.android.com/develop/ui/compose/components/progress?authuser=19

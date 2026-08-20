@@ -87,8 +87,7 @@ class HomeViewModel @Inject constructor(
     fun downloadModel(id: String) {
         viewModelScope.launch {
             when (val result = modelRepository.download(id)) {
-                is AppResult.Success -> _events.emit(HomeEvent.Message("Download queued; progress is live"))
-                is AppResult.Error -> _events.emit(HomeEvent.Message(result.message))
+                is AppResult.Success, is AppResult.Error -> Unit
                 AppResult.Loading -> Unit
             }
         }
@@ -97,8 +96,7 @@ class HomeViewModel @Inject constructor(
     fun pauseModel(id: String) {
         viewModelScope.launch {
             when (val result = modelRepository.pause(id)) {
-                is AppResult.Success -> _events.emit(HomeEvent.Message("Download paused"))
-                is AppResult.Error -> _events.emit(HomeEvent.Message(result.message))
+                is AppResult.Success, is AppResult.Error -> Unit
                 AppResult.Loading -> Unit
             }
         }

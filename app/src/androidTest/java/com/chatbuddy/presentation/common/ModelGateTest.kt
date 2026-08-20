@@ -19,7 +19,7 @@ class ModelGateTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun unavailableModelShowsActionableSetupAndInvokesDownload() {
+    fun unavailableModelShowsDownloadActionAndInvokesDownload() {
         var downloadClicks = 0
         composeRule.setContent {
             ChatBuddyTheme {
@@ -32,7 +32,7 @@ class ModelGateTest {
             }
         }
 
-        composeRule.onNodeWithText("Local AI setup required").assertIsDisplayed()
+        composeRule.onNodeWithText("Local chat is unavailable").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Download local AI model")
             .assertIsDisplayed()
             .performClick()
@@ -54,6 +54,26 @@ class ModelGateTest {
         }
 
         composeRule.onNodeWithText("Chat content").assertIsDisplayed()
-        assertEquals(0, composeRule.onAllNodesWithText("Local AI setup required").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("Local chat is unavailable").fetchSemanticsNodes().size)
+    }
+
+    @Test
+    fun queuedModelShowsPauseActionInsteadOfAToastOnlyState() {
+        var pauseClicks = 0
+        composeRule.setContent {
+            ChatBuddyTheme {
+                ModelGate(
+                    status = ModelStatus.Queued(totalBytes = 2_000_000L),
+                    onDownload = {},
+                    onPause = { pauseClicks++ }
+                ) {
+                    Text("Chat content")
+                }
+            }
+        }
+
+        composeRule.onNodeWithText("Download scheduled").assertIsDisplayed()
+        composeRule.onNodeWithText("Pause download").performClick()
+        composeRule.runOnIdle { assertEquals(1, pauseClicks) }
     }
 }
