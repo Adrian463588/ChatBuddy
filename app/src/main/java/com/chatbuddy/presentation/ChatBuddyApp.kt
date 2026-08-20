@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -45,6 +47,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -119,43 +123,82 @@ fun ChatBuddyApp(windowSizeClass: WindowSizeClass, viewModel: HomeViewModel) {
     }
 
     val compact = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Compact
+    val useNavigationRail = !compact
+    val horizontalPadding = when (windowSizeClass.widthSizeClass) {
+        WindowWidthSizeClass.Compact -> 16.dp
+        WindowWidthSizeClass.Medium -> 24.dp
+        else -> 32.dp
+    }
     Scaffold(
         topBar = { TopAppBar(title = { Text(titleFor(state.selectedTab)) }) },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            NavigationBar(modifier = Modifier.navigationBarsPadding()) {
-                HomeTab.values().forEach { tab ->
-                    NavigationBarItem(
-                        selected = state.selectedTab == tab,
-                        onClick = { viewModel.selectTab(tab) },
-                        icon = { Icon(tabIcon(tab), contentDescription = tabLabel(tab)) },
-                        label = { Text(tabLabel(tab)) }
-                    )
+            if (!useNavigationRail) {
+                NavigationBar(modifier = Modifier.navigationBarsPadding()) {
+                    HomeTab.values().forEach { tab ->
+                        NavigationBarItem(
+                            selected = state.selectedTab == tab,
+                            onClick = { viewModel.selectTab(tab) },
+                            icon = { Icon(tabIcon(tab), contentDescription = tabLabel(tab)) },
+                            label = { Text(tabLabel(tab)) }
+                        )
+                    }
                 }
             }
         }
     ) { padding ->
-        Box(
+        Row(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-            contentAlignment = Alignment.TopCenter
         ) {
-            Column(
+            if (useNavigationRail) {
+                NavigationRail(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .navigationBarsPadding()
+                ) {
+                    HomeTab.values().forEach { tab ->
+                        NavigationRailItem(
+                            selected = state.selectedTab == tab,
+                            onClick = { viewModel.selectTab(tab) },
+                            icon = { Icon(tabIcon(tab), contentDescription = tabLabel(tab)) },
+                            label = { Text(tabLabel(tab)) }
+                        )
+                    }
+                }
+            }
+            Box(
                 modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                val contentModifier = Modifier
                     .fillMaxWidth()
-                    .then(if (compact) Modifier.padding(horizontal = 16.dp) else Modifier.padding(horizontal = 24.dp))
+                    .padding(horizontal = horizontalPadding)
                     .widthIn(max = 600.dp)
                     .imePadding()
-                    .verticalScroll(rememberScrollState())
-                    .padding(vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                when (state.selectedTab) {
-                    HomeTab.CHAT -> ChatTab(state, viewModel) { folderPicker.launch(null) }
-                    HomeTab.TRANSLATE -> TranslateTab(state, viewModel)
-                    HomeTab.OCR -> OcrTab(viewModel)
-                    HomeTab.SETTINGS -> SettingsTab(state, viewModel) { folderPicker.launch(null) }
+                    .padding(vertical = 16.dp)
+                if (state.selectedTab == HomeTab.CHAT) {
+                    Column(
+                        modifier = contentModifier.fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        ChatTab(state, viewModel) { folderPicker.launch(null) }
+                    }
+                } else {
+                    Column(
+                        modifier = contentModifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        when (state.selectedTab) {
+                            HomeTab.TRANSLATE -> TranslateTab(state, viewModel)
+                            HomeTab.OCR -> OcrTab(viewModel)
+                            HomeTab.SETTINGS -> SettingsTab(state, viewModel) { folderPicker.launch(null) }
+                            HomeTab.CHAT -> Unit
+                        }
+                    }
                 }
             }
         }
@@ -189,32 +232,48 @@ private fun ChatContent(state: HomeUiState, homeViewModel: HomeViewModel) {
             homeViewModel.consumeChatText()
         }
     }
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Local RAG chat", style = MaterialTheme.typography.headlineSmall)
-        Text("Model file is managed through SAF. The native llama.cpp runtime must be available before answers can be generated.")
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Text("Local RAG chat", style = MaterialTheme.typography.headlineSmall)
+            Text("Model file is managed through SAF. The native llama.cpp runtime must be available before answers can be generated.")
+        }
         if (chatState.activePersona == null) {
-            Text("Create and activate a persona in Settings before chatting.", color = MaterialTheme.colorScheme.error)
+            item {
+                Text(
+                    "Create and activate a persona in Settings before chatting.",
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
-        LazyColumn(
-            modifier = Modifier.fillMaxWidth().height(260.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(chatState.messages, key = { it.id }) { message -> ChatBubble(message) }
+        items(chatState.messages, key = { it.id }) { message -> ChatBubble(message) }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Use document evidence", modifier = Modifier.weight(1f))
+                Switch(checked = chatState.useRag, onCheckedChange = viewModel::setUseRag)
+            }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Use document evidence", modifier = Modifier.weight(1f))
-            Switch(checked = chatState.useRag, onCheckedChange = viewModel::setUseRag)
+        item {
+            OutlinedTextField(
+                value = chatState.input,
+                onValueChange = viewModel::setInput,
+                label = { Text("Message") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+                maxLines = 5
+            )
         }
-        OutlinedTextField(
-            value = chatState.input,
-            onValueChange = viewModel::setInput,
-            label = { Text("Message") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 2,
-            maxLines = 5
-        )
-        Button(onClick = viewModel::send, enabled = !chatState.streaming && chatState.input.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-            Text(if (chatState.streaming) "Generating" else "Send message")
+        item {
+            Button(
+                onClick = viewModel::send,
+                enabled = !chatState.streaming && chatState.input.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (chatState.streaming) "Generating" else "Send message")
+            }
         }
     }
 }
@@ -255,12 +314,21 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     translationState.result?.let { result ->
-                        Row {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             val clipboard = LocalClipboardManager.current
                             val context = LocalContext.current
                             IconButton(onClick = { clipboard.setText(AnnotatedString(result.text)) }) { Icon(Icons.Outlined.ContentCopy, "Copy translation") }
                             IconButton(onClick = { shareText(context, result.text) }) { Icon(Icons.Outlined.Share, "Share translation") }
-                            Text(providerLabel(result.provider), modifier = Modifier.padding(start = 8.dp, top = 12.dp), style = MaterialTheme.typography.labelSmall)
+                            Spacer(modifier = Modifier.weight(1f))
+                            Text(
+                                providerLabel(result.provider),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                     translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -313,26 +381,56 @@ private fun CompactTranslationModelCard(
     viewModel: TranslationViewModel
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                val status = when {
-                    state.modelDownloading -> "Downloading language pack"
-                    state.modelChecking -> "Checking translation"
-                    state.modelReady -> "Offline translation ready"
-                    else -> "Translation needs a language pack"
+        val status = when {
+            state.modelDownloading -> "Downloading language pack"
+            state.modelChecking -> "Checking translation"
+            state.modelReady -> "Offline translation ready"
+            else -> "Translation needs a language pack"
+        }
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            if (maxWidth < 420.dp) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(status, style = MaterialTheme.typography.titleSmall)
+                    Text("ML Kit offline provider", style = MaterialTheme.typography.bodySmall)
+                    state.modelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    when {
+                        state.modelDownloading -> CircularProgressIndicator(
+                            modifier = Modifier.width(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                        !state.modelReady && !state.modelChecking -> OutlinedButton(
+                            onClick = viewModel::downloadLanguageModels,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Get language pack")
+                        }
+                    }
                 }
-                Text(status, style = MaterialTheme.typography.titleSmall)
-                Text("ML Kit offline provider", style = MaterialTheme.typography.bodySmall)
-                state.modelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            }
-            when {
-                state.modelDownloading -> CircularProgressIndicator(modifier = Modifier.width(24.dp), strokeWidth = 2.dp)
-                !state.modelReady && !state.modelChecking -> OutlinedButton(onClick = viewModel::downloadLanguageModels) {
-                    Text("Get pack")
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(status, style = MaterialTheme.typography.titleSmall)
+                        Text("ML Kit offline provider", style = MaterialTheme.typography.bodySmall)
+                        state.modelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    }
+                    when {
+                        state.modelDownloading -> CircularProgressIndicator(
+                            modifier = Modifier.width(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                        !state.modelReady && !state.modelChecking -> OutlinedButton(
+                            onClick = viewModel::downloadLanguageModels
+                        ) {
+                            Text("Get pack")
+                        }
+                    }
                 }
             }
         }
@@ -346,7 +444,7 @@ private fun LanguageSelectorRow(
     swapDescription: String
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        if (maxWidth < 360.dp) {
+        if (maxWidth < 420.dp) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -441,6 +539,21 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
             viewModel.setCameraError(message)
         }
     }
+    val stopCamera = {
+        cameraEnabled = false
+        cameraError = null
+        viewModel.clearCameraError()
+    }
+    val startCamera = {
+        if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            cameraEnabled = true
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
     val clipboard = LocalClipboardManager.current
     LaunchedEffect(translationState.sourceLanguage) {
         viewModel.setCameraLanguage(translationState.sourceLanguage)
@@ -452,27 +565,32 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         LanguageSelectorRow(translationState, translationViewModel, "Swap OCR and translation languages")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f)) {
-                Text("Choose image")
-            }
-            OutlinedButton(
-                onClick = {
-                    if (cameraEnabled) {
-                        cameraEnabled = false
-                        cameraError = null
-                        viewModel.clearCameraError()
-                    } else if (
-                        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                        PackageManager.PERMISSION_GRANTED
-                    ) {
-                        cameraEnabled = true
-                    } else {
-                        cameraPermission.launch(Manifest.permission.CAMERA)
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            if (maxWidth < 420.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { picker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Choose image")
                     }
-                },
-                modifier = Modifier.weight(1f)
-            ) { Text(if (cameraEnabled) "Stop camera" else "Use camera") }
+                    CameraActionButton(
+                        enabled = cameraEnabled,
+                        onStop = stopCamera,
+                        onStart = startCamera,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f)) {
+                        Text("Choose image")
+                    }
+                    CameraActionButton(
+                        enabled = cameraEnabled,
+                        onStop = stopCamera,
+                        onStart = startCamera,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
         }
         TranslationModelCard(translationState, translationViewModel, compact = true)
         if (cameraEnabled && cameraError == null) {
@@ -530,6 +648,21 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
         if (!cameraEnabled && ocrResult != null && ocrResult.text.isBlank() && !ocrState.processing) {
             Text("No text found in this image.", style = MaterialTheme.typography.bodyMedium)
         }
+    }
+}
+
+@Composable
+private fun CameraActionButton(
+    enabled: Boolean,
+    onStop: () -> Unit,
+    onStart: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedButton(
+        onClick = if (enabled) onStop else onStart,
+        modifier = modifier
+    ) {
+        Text(if (enabled) "Stop camera" else "Use camera")
     }
 }
 
@@ -679,13 +812,36 @@ private fun SettingsTab(
     } else {
         personaState.personas.forEach { persona ->
             Card(modifier = Modifier.fillMaxWidth()) {
-                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(persona.name, style = MaterialTheme.typography.titleMedium)
                         Text(persona.description.ifBlank { "No description" }, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
-                    Button(onClick = { personaViewModel.setActive(persona.id) }, enabled = !persona.active) { Text(if (persona.active) "Active" else "Activate") }
-                    IconButton(onClick = { personaViewModel.delete(persona.id) }) { Icon(Icons.Outlined.Delete, "Delete ${persona.name}") }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (persona.active) {
+                            Text(
+                                "Active",
+                                modifier = Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.secondary,
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        } else {
+                            OutlinedButton(
+                                onClick = { personaViewModel.setActive(persona.id) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Activate persona") }
+                        }
+                        IconButton(onClick = { personaViewModel.delete(persona.id) }) {
+                            Icon(Icons.Outlined.Delete, "Delete ${persona.name}")
+                        }
+                    }
                 }
             }
         }
@@ -724,7 +880,10 @@ private fun ModelCard(model: com.chatbuddy.domain.model.ModelState, viewModel: H
             when (status) {
                 is ModelStatus.Queued -> {
                     Text("Download scheduled · waiting for network")
-                    OutlinedButton(onClick = { viewModel.pauseModel(model.artifact.id) }) { Text("Pause download") }
+                    OutlinedButton(
+                        onClick = { viewModel.pauseModel(model.artifact.id) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Pause download") }
                 }
                 is ModelStatus.Downloading -> {
                     val progress = if (status.totalBytes > 0L) {
@@ -733,14 +892,18 @@ private fun ModelCard(model: com.chatbuddy.domain.model.ModelState, viewModel: H
                         0f
                     }
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("${(progress * 100).toInt()}%", modifier = Modifier.weight(1f))
-                        OutlinedButton(onClick = { viewModel.pauseModel(model.artifact.id) }) { Text("Pause download") }
-                    }
+                    Text("${(progress * 100).toInt()}%")
+                    OutlinedButton(
+                        onClick = { viewModel.pauseModel(model.artifact.id) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Pause download") }
                 }
                 is ModelStatus.Paused -> {
                     Text("${formatBytes(status.downloadedBytes)} downloaded")
-                    Button(onClick = { viewModel.downloadModel(model.artifact.id) }) { Text("Resume download") }
+                    Button(
+                        onClick = { viewModel.downloadModel(model.artifact.id) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Resume download") }
                 }
                 is ModelStatus.Verifying -> {
                     Text("Verifying checksum")
@@ -749,10 +912,16 @@ private fun ModelCard(model: com.chatbuddy.domain.model.ModelState, viewModel: H
                 is ModelStatus.Ready -> Text("Ready · ${model.artifact.storageKind}")
                 is ModelStatus.Error -> {
                     Text(status.message, color = MaterialTheme.colorScheme.error)
-                    Button(onClick = { viewModel.downloadModel(model.artifact.id) }) { Text("Retry download") }
+                    Button(
+                        onClick = { viewModel.downloadModel(model.artifact.id) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Retry download") }
                 }
                 ModelStatus.NotInstalled ->
-                    Button(onClick = { viewModel.downloadModel(model.artifact.id) }) { Text("Download") }
+                    Button(
+                        onClick = { viewModel.downloadModel(model.artifact.id) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Download") }
                 ModelStatus.Unavailable -> Text("Unavailable on this device")
             }
         }
