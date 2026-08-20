@@ -29,13 +29,15 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -72,6 +74,7 @@ import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import com.chatbuddy.domain.model.ModelStatus
+import com.chatbuddy.domain.model.LanguageOption
 import com.chatbuddy.presentation.common.ModelGate
 import com.chatbuddy.presentation.home.HomeTab
 import com.chatbuddy.presentation.home.HomeUiState
@@ -223,10 +226,31 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Realtime translation", style = MaterialTheme.typography.headlineSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            LanguageMenu("Source", translationState.sourceLanguage, translationState.languages) { viewModel.setSourceLanguage(it) }
-            OutlinedButton(onClick = viewModel::swapLanguages, modifier = Modifier.semantics { contentDescription = "Swap translation languages" }) { Text("Swap") }
-            LanguageMenu("Target", translationState.targetLanguage, translationState.languages) { viewModel.setTargetLanguage(it) }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LanguageDropdown(
+                label = "From",
+                selected = translationState.sourceLanguage,
+                languages = translationState.languages,
+                onSelected = viewModel::setSourceLanguage,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(
+                onClick = viewModel::swapLanguages,
+                modifier = Modifier.semantics { contentDescription = "Swap source and target languages" }
+            ) {
+                Icon(Icons.Outlined.SwapHoriz, contentDescription = null)
+            }
+            LanguageDropdown(
+                label = "To",
+                selected = translationState.targetLanguage,
+                languages = translationState.languages,
+                onSelected = viewModel::setTargetLanguage,
+                modifier = Modifier.weight(1f)
+            )
         }
         OutlinedTextField(
             value = translationState.sourceText,
@@ -259,16 +283,48 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LanguageMenu(label: String, selected: String, languages: List<com.chatbuddy.domain.model.LanguageOption>, onSelected: (String) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        OutlinedButton(onClick = { expanded = true }, modifier = Modifier.semantics { contentDescription = "$label language" }) { Text(selected.ifBlank { "Unavailable" }) }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+private fun LanguageDropdown(
+    label: String,
+    selected: String,
+    languages: List<LanguageOption>,
+    onSelected: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by rememberSaveable(label) { mutableStateOf(false) }
+    val selectedLanguage = languages.firstOrNull { it.tag == selected }
+    val isAvailable = languages.isNotEmpty()
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selectedLanguage?.displayName ?: selected.ifBlank { "Unavailable" },
+            onValueChange = {},
+            readOnly = true,
+            enabled = isAvailable,
+            singleLine = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .menuAnchor()
+                .fillMaxWidth()
+                .semantics { contentDescription = "$label language selector" }
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
             languages.forEach { language ->
                 DropdownMenuItem(
                     text = { Text(language.displayName) },
-                    onClick = { expanded = false; onSelected(language.tag) }
+                    onClick = {
+                        expanded = false
+                        onSelected(language.tag)
+                    }
                 )
             }
         }

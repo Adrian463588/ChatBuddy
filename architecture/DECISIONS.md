@@ -27,3 +27,12 @@ Audio capture uses `AudioRecord` at 16 kHz and Android TTS only when offline cap
 ## ADR-007 — reference projects are patterns only
 
 The supplied `docs/**` directories are not copied into product source and are ignored by Git. Product decisions are reconciled against `AGENTS.md`, `PRD.md`, and `DESIGN.md` and recorded here.
+
+## ADR-008 — translation language selection uses dropdown fields
+
+The translation screen uses two Material 3 exposed dropdown fields labelled `From` and `To`, with a separate icon button for swapping the direction. Language options come from the real `TranslationUiState.languages` list; an empty provider list disables the selectors instead of inventing language options. This removes the pill/chip-like language controls while keeping the interaction recognizable as a translation flow.
+
+This follows Android's exposed-dropdown guidance, which pairs a read-only text field with a menu, and the Android Google Translate flow, which presents `From` and `To` language selectors plus a reverse action:
+
+- https://developer.android.com/reference/kotlin/androidx/compose/material3/ExposedDropdownMenuBox.composable
+- https://support.google.com/translate/answer/6142478?co=GENIE.Platform%3DAndroid&hl=en

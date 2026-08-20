@@ -1,5 +1,6 @@
 # Android/Gradle
 .gradle/
+.kotlin/
 local.properties
 **/build/
 captures/
@@ -33,6 +34,8 @@ service-account*.json
 preview/
 !preview/
 !preview/chatbuddy-device.png
+!preview/chatbuddy-translate-device.png
+!preview/chatbuddy-translate-dropdown-device.png
 
 # Supplied reference projects are read-only and never part of the product repo.
 /docs/

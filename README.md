@@ -4,7 +4,11 @@ ChatBuddy adalah aplikasi Android local-first untuk chat berbasis dokumen, terje
 
 ![ChatBuddy device preview](preview/chatbuddy-device.png)
 
-Preview di atas harus berasal dari APK ChatBuddy yang dijalankan pada device. Jika file belum ada, status preview adalah pending dan bukan bukti fitur AI telah siap.
+![Translate screen preview](preview/chatbuddy-translate-device.png)
+
+![Translate language dropdown preview](preview/chatbuddy-translate-dropdown-device.png)
+
+Preview PNG di atas harus berasal dari APK ChatBuddy yang dijalankan pada device. Jika file belum ada, status preview adalah pending dan bukan bukti fitur AI telah siap.
 
 ## Status implementasi
 
@@ -82,7 +86,8 @@ Device baseline yang direncanakan: Samsung `SM-G988B`, Android 13 (`RRCN3008VYE`
 - `:app:externalNativeBuildDebug` dan `:app:assembleDebug` — pass untuk `arm64-v8a` dan `armeabi-v7a`.
 - `:app:connectedDebugAndroidTest` — 2/2 pass pada `SM-G988B - 13`.
 - APK terbaru berhasil dipasang dan diluncurkan pada `RRCN3008VYE`; accessibility dump melaporkan package `com.chatbuddy`, tombol SAF, dan empat tab navigasi. Tidak ada `FATAL EXCEPTION` pada smoke log.
-- Preview aktual tersedia untuk onboarding, Translate, OCR, Settings, dan landscape. `preview/chatbuddy-device.png` adalah preview utama README.
+- Preview aktual tersedia untuk onboarding, Translate, dropdown bahasa Translate, OCR, Settings, dan landscape. `preview/chatbuddy-device.png` adalah preview utama README.
+- `2026-08-20`: layar Translate diverifikasi pada `SM-G988B` dengan exposed dropdown `From`/`To`, popup daftar bahasa, tombol swap, dan layout compact portrait; tidak ada chip selector.
 - APK debug: 131,333,318 bytes; SHA-256 `31af09d3e5e7c715e4616d337263ed0beeb8bcea4dd82daca524892731e92737`.
 
 Evidence ini membuktikan build, UI shell, navigation, dan launch; tidak membuktikan inferensi atau ingestion tanpa artifact model/runtime yang benar-benar diunduh dan diverifikasi.
