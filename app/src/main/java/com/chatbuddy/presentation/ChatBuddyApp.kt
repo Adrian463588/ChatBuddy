@@ -96,6 +96,7 @@ import com.chatbuddy.presentation.ocr.OcrViewModel
 import com.chatbuddy.presentation.ocr.CameraPreview
 import com.chatbuddy.presentation.ocr.OcrBoundingBoxOverlay
 import com.chatbuddy.presentation.ocr.OcrImagePreview
+import com.chatbuddy.presentation.ocr.LiveOcrTranscript
 import com.chatbuddy.presentation.settings.PersonaViewModel
 import com.chatbuddy.presentation.rag.DocumentViewModel
 import com.chatbuddy.utils.formatBytes
@@ -565,34 +566,38 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         LanguageSelectorRow(translationState, translationViewModel, "Swap OCR and translation languages")
-        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            if (maxWidth < 420.dp) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { picker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Choose image")
+        if (!cameraEnabled) {
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                if (maxWidth < 420.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { picker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Choose image")
+                        }
+                        CameraActionButton(
+                            enabled = false,
+                            onStop = stopCamera,
+                            onStart = startCamera,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
-                    CameraActionButton(
-                        enabled = cameraEnabled,
-                        onStop = stopCamera,
-                        onStart = startCamera,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    Button(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f)) {
-                        Text("Choose image")
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f)) {
+                            Text("Choose image")
+                        }
+                        CameraActionButton(
+                            enabled = false,
+                            onStop = stopCamera,
+                            onStart = startCamera,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
-                    CameraActionButton(
-                        enabled = cameraEnabled,
-                        onStop = stopCamera,
-                        onStart = startCamera,
-                        modifier = Modifier.weight(1f)
-                    )
                 }
             }
         }
-        TranslationModelCard(translationState, translationViewModel, compact = true)
+        if (!cameraEnabled) {
+            TranslationModelCard(translationState, translationViewModel, compact = true)
+        }
         if (cameraEnabled && cameraError == null) {
             CameraPreview(
                 analyzer = viewModel.cameraAnalyzer,
@@ -604,10 +609,23 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
                     cameraError = null
                     viewModel.clearCameraError()
                 },
-                overlay = { OcrBoundingBoxOverlay(ocrResult) },
+                overlay = {
+                    OcrBoundingBoxOverlay(ocrResult, modifier = Modifier.fillMaxSize())
+                    LiveOcrTranscript(
+                        result = ocrResult,
+                        translationState = translationState,
+                        translationProvider = translationState.result
+                            ?.takeIf { translationState.sourceText.trim() == ocrResult?.text?.trim() }
+                            ?.let { providerLabel(it.provider) },
+                        onDownloadTranslation = translationViewModel::downloadLanguageModels,
+                        onStopCamera = stopCamera,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(8.dp)
+                    )
+                },
                 modifier = Modifier.semantics { contentDescription = "Live camera OCR preview" }
             )
-            Text("Live OCR is running", style = MaterialTheme.typography.labelMedium)
         } else if (cameraEnabled && cameraError != null) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -635,7 +653,7 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
         }
         if (ocrState.processing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         ocrState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        ocrResult?.takeIf { it.text.isNotBlank() }?.let { result ->
+        if (!cameraEnabled) ocrResult?.takeIf { it.text.isNotBlank() }?.let { result ->
             OcrResultPanel(
                 result = result,
                 translationState = translationState,
