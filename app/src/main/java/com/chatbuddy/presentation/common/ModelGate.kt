@@ -57,7 +57,7 @@ fun ModelGate(
                         )
                     }
                     is ModelStatus.Queued -> {
-                        Text("The download is scheduled and waiting for a network connection.")
+                        Text("The download is queued and will resume automatically when a connection is available.")
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         ModelActionButton(
                             label = "Pause download",
@@ -150,7 +150,7 @@ private fun ModelActionButton(
 
 private fun titleFor(status: ModelStatus): String = when (status) {
     ModelStatus.NotInstalled -> "Local chat is unavailable"
-    is ModelStatus.Queued -> "Download scheduled"
+    is ModelStatus.Queued -> "Download queued"
     is ModelStatus.Downloading -> "Downloading local model"
     is ModelStatus.Paused -> "Download paused"
     is ModelStatus.Verifying -> "Checking model integrity"

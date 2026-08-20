@@ -53,13 +53,13 @@ class ModelRepositoryImpl @Inject constructor(
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .build()
+        stateStore.update(artifact.id, ModelStatus.Queued(artifact.sizeBytes))
         return runCatching {
             workManager.enqueueUniqueWork(
                 "chatbuddy-download-${artifact.id}",
                 ExistingWorkPolicy.REPLACE,
                 request
             )
-            stateStore.update(artifact.id, ModelStatus.Queued(artifact.sizeBytes))
         }.fold(
             onSuccess = { AppResult.Success(Unit) },
             onFailure = { error ->

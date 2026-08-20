@@ -43,22 +43,30 @@ class ResumableDownloadManager @Inject constructor(
             val tempPair = store.openTemp(artifact.id, fileName)
                 ?: return@withContext failure(artifact.id, "Unable to create model temporary file in SAF")
             val temp = tempPair.first
+            var restartFromZero = false
+            var completeTemporaryFile = false
+            var invalidTemporaryFile = false
             tempPair.second.use { output ->
                 var offset = store.fileLength(temp)
                 store.saveCheckpoint(artifact.id, offset)
+                stateStore.update(
+                    artifact.id,
+                    ModelStatus.Downloading(offset, artifact.sizeBytes)
+                )
                 onProgress(offset, artifact.sizeBytes)
                 if (offset > artifact.sizeBytes) {
-                    store.delete(temp)
-                    store.clearCheckpoint(artifact.id)
-                    return@withContext failure(artifact.id, "Temporary model file is larger than manifest size")
+                    invalidTemporaryFile = true
+                    return@use
+                }
+                if (offset == artifact.sizeBytes) {
+                    completeTemporaryFile = true
+                    return@use
                 }
                 val response = request(artifact, offset)
                 response.use { bodyResponse ->
                     if (offset > 0L && bodyResponse.code == 200) {
-                        output.close()
-                        store.delete(temp)
-                        store.clearCheckpoint(artifact.id)
-                        return@withContext download(artifact, onProgress)
+                        restartFromZero = true
+                        return@use
                     }
                     if (bodyResponse.code != 200 && bodyResponse.code != 206) {
                         return@withContext failure(
@@ -101,21 +109,21 @@ class ResumableDownloadManager @Inject constructor(
                 }
             }
 
-            if (store.fileLength(temp) != artifact.sizeBytes) {
-                stateStore.update(artifact.id, ModelStatus.Error("Downloaded size does not match manifest"))
-                return@withContext AppResult.Error("Downloaded size does not match manifest")
-            }
-            stateStore.update(artifact.id, ModelStatus.Verifying(artifact.sizeBytes, artifact.sizeBytes))
-            if (sha256(temp) != artifact.sha256) {
+            if (invalidTemporaryFile) {
                 store.delete(temp)
-                stateStore.update(artifact.id, ModelStatus.Error("SHA-256 verification failed"))
-                return@withContext AppResult.Error("SHA-256 verification failed")
+                store.clearCheckpoint(artifact.id)
+                return@withContext failure(artifact.id, "Temporary model file is larger than manifest size")
             }
-            store.renameTemp(temp, fileName)
-                ?: return@withContext failure(artifact.id, "Unable to atomically rename verified model")
-            store.clearCheckpoint(artifact.id)
-            stateStore.update(artifact.id, ModelStatus.Ready(artifact.storageKind))
-            AppResult.Success(Unit)
+            if (restartFromZero) {
+                store.delete(temp)
+                store.clearCheckpoint(artifact.id)
+                return@withContext download(artifact, onProgress)
+            }
+            if (completeTemporaryFile) {
+                return@withContext finalizeTemporaryFile(artifact, temp, fileName)
+            }
+
+            finalizeTemporaryFile(artifact, temp, fileName)
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (error: SafStorageException) {
@@ -129,6 +137,29 @@ class ResumableDownloadManager @Inject constructor(
             stateStore.update(artifact.id, ModelStatus.Error("Model download failed: ${error.message}"))
             AppResult.Error("Model download failed", error)
         }
+    }
+
+    private fun finalizeTemporaryFile(
+        artifact: ModelArtifact,
+        temp: DocumentFile,
+        fileName: String
+    ): AppResult<Unit> {
+        if (store.fileLength(temp) != artifact.sizeBytes) {
+            stateStore.update(artifact.id, ModelStatus.Error("Downloaded size does not match manifest"))
+            return AppResult.Error("Downloaded size does not match manifest")
+        }
+        stateStore.update(artifact.id, ModelStatus.Verifying(artifact.sizeBytes, artifact.sizeBytes))
+        if (sha256(temp) != artifact.sha256) {
+            store.delete(temp)
+            store.clearCheckpoint(artifact.id)
+            stateStore.update(artifact.id, ModelStatus.Error("SHA-256 verification failed"))
+            return AppResult.Error("SHA-256 verification failed")
+        }
+        store.renameTemp(temp, fileName)
+            ?: return failure(artifact.id, "Unable to atomically rename verified model")
+        store.clearCheckpoint(artifact.id)
+        stateStore.update(artifact.id, ModelStatus.Ready(artifact.storageKind))
+        return AppResult.Success(Unit)
     }
 
     suspend fun verify(artifact: ModelArtifact): AppResult<Unit> = withContext(Dispatchers.IO) {

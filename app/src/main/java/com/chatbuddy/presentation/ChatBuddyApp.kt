@@ -897,7 +897,7 @@ private fun ModelCard(model: com.chatbuddy.domain.model.ModelState, viewModel: H
             Text("${formatBytes(model.artifact.sizeBytes)} · ${model.artifact.license}", style = MaterialTheme.typography.bodySmall)
             when (status) {
                 is ModelStatus.Queued -> {
-                    Text("Download scheduled · waiting for network")
+                    Text("Download queued · resumes automatically")
                     OutlinedButton(
                         onClick = { viewModel.pauseModel(model.artifact.id) },
                         modifier = Modifier.fillMaxWidth()

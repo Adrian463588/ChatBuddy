@@ -29,6 +29,7 @@ class DownloadWorker @AssistedInject constructor(
             ?: return Result.failure(workDataOf(KEY_ERROR to "Download request has no model id"))
         val artifact = stateStore.find(id)
             ?: return Result.failure(workDataOf(KEY_ERROR to "Model manifest entry is unavailable"))
+        stateStore.update(id, ModelStatus.Downloading(0L, artifact.sizeBytes))
         val foreground = artifact.sizeBytes >= FOREGROUND_THRESHOLD_BYTES
         if (foreground) {
             try {
@@ -42,6 +43,7 @@ class DownloadWorker @AssistedInject constructor(
         return when (val result = runDownload(id, foreground)) {
             is AppResult.Success -> Result.success()
             is AppResult.Error -> if (result.cause is IOException) {
+                stateStore.update(id, ModelStatus.Queued(artifact.sizeBytes))
                 Result.retry()
             } else {
                 Result.failure(workDataOf(KEY_ERROR to result.message))
