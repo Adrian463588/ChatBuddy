@@ -86,19 +86,19 @@ class HomeViewModel @Inject constructor(
 
     fun downloadModel(id: String) {
         viewModelScope.launch {
-            when (val result = modelRepository.download(id)) {
-                is AppResult.Success, is AppResult.Error -> Unit
-                AppResult.Loading -> Unit
-            }
+            reportFailure("Download", modelRepository.download(id))
         }
     }
 
     fun pauseModel(id: String) {
         viewModelScope.launch {
-            when (val result = modelRepository.pause(id)) {
-                is AppResult.Success, is AppResult.Error -> Unit
-                AppResult.Loading -> Unit
-            }
+            reportFailure("Pause", modelRepository.pause(id))
+        }
+    }
+
+    private suspend fun reportFailure(action: String, result: AppResult<*>) {
+        if (result is AppResult.Error) {
+            _events.emit(HomeEvent.Message("$action failed: ${result.message}"))
         }
     }
 }

@@ -100,6 +100,8 @@ Evidence ini membuktikan build, UI shell, navigation, dan launch; tidak membukti
 - `:app:connectedDebugAndroidTest` — 5/5 pass pada `SM-G988B - 13`, termasuk callback Download/Pause pada ModelGate dan filtering/selection language dropdown.
 - APK debug berhasil dipasang dan cold-launched pada `RRCN3008VYE`; `dumpsys` mengonfirmasi `com.chatbuddy/.MainActivity` sebagai resumed dan smoke log tidak menunjukkan crash aplikasi.
 - Transfer Gemma tidak dimulai otomatis selama smoke karena artifact sekitar 2.84 GB; state dan callback diuji tanpa menggunakan bandwidth/storage pengguna secara diam-diam. Sesi transfer nyata tetap membutuhkan tap pengguna, folder SAF, jaringan, checksum, dan ruang penyimpanan yang cukup.
+- `2026-08-20` setelah perbaikan download: `"wa"` dipakai untuk SAF append (mode Android `"rwa"` tidak valid), worker failure dipetakan ke status Error yang dapat di-retry, backoff jaringan ditambahkan, dan artifact besar memakai foreground WorkManager.
+- Device smoke transfer MiniLM dimulai dari Settings pada `SM-G988B` dan mencapai status `Download scheduled`; completion/SHA-256 `Ready` belum dapat dicatat karena device berpindah ke aplikasi lain selama sesi. Status ini tetap pending, bukan klaim download berhasil.
 
 ## License/provenance
 

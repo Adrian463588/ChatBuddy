@@ -83,6 +83,7 @@ import com.chatbuddy.presentation.ocr.OcrViewModel
 import com.chatbuddy.presentation.ocr.CameraPreview
 import com.chatbuddy.presentation.settings.PersonaViewModel
 import com.chatbuddy.presentation.rag.DocumentViewModel
+import com.chatbuddy.utils.formatBytes
 import com.chatbuddy.domain.model.ChatMessage
 import com.chatbuddy.domain.model.Persona
 import java.util.UUID
@@ -478,7 +479,7 @@ private fun ModelCard(model: com.chatbuddy.domain.model.ModelState, viewModel: H
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(model.artifact.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${model.artifact.sizeBytes / 1_000_000} MB · ${model.artifact.license}", style = MaterialTheme.typography.bodySmall)
+            Text("${formatBytes(model.artifact.sizeBytes)} · ${model.artifact.license}", style = MaterialTheme.typography.bodySmall)
             when (status) {
                 is ModelStatus.Queued -> {
                     Text("Download scheduled · waiting for network")
@@ -497,7 +498,7 @@ private fun ModelCard(model: com.chatbuddy.domain.model.ModelState, viewModel: H
                     }
                 }
                 is ModelStatus.Paused -> {
-                    Text("${status.downloadedBytes / 1_000_000} MB downloaded")
+                    Text("${formatBytes(status.downloadedBytes)} downloaded")
                     Button(onClick = { viewModel.downloadModel(model.artifact.id) }) { Text("Resume download") }
                 }
                 is ModelStatus.Verifying -> {

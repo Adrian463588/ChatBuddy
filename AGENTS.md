@@ -137,7 +137,8 @@ llmSession.use { session ->
 - Checkpoint: simpan byte offset ke SharedPreferences setelah setiap chunk
 - WorkManager: `CoroutineWorker`, return `Result.retry()` saat jaringan putus
 - Progress: emit ke `StateFlow<DownloadProgress>` dari worker
-- SAF write mode: `"rwa"` (read-write-append) untuk resume
+- SAF append mode: `"wa"` (write-append) untuk resume. Android `ContentResolver`
+  tidak mendukung `"rwa"`; mode tersebut gagal sebelum download menulis byte.
 
 ---
 

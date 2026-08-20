@@ -2,6 +2,7 @@ package com.chatbuddy.data.repository
 
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
+import androidx.work.BackoffPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -17,6 +18,7 @@ import com.chatbuddy.domain.model.ModelState
 import com.chatbuddy.domain.model.ModelStatus
 import com.chatbuddy.domain.repository.ModelRepository
 import kotlinx.coroutines.flow.Flow
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -49,11 +51,12 @@ class ModelRepositoryImpl @Inject constructor(
         val request = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setInputData(workDataOf(DownloadWorker.KEY_ARTIFACT_ID to artifact.id))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .build()
         return runCatching {
             workManager.enqueueUniqueWork(
                 "chatbuddy-download-${artifact.id}",
-                ExistingWorkPolicy.KEEP,
+                ExistingWorkPolicy.REPLACE,
                 request
             )
             stateStore.update(artifact.id, ModelStatus.Queued(artifact.sizeBytes))

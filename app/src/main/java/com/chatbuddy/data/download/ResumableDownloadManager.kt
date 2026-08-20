@@ -22,10 +22,13 @@ class ResumableDownloadManager @Inject constructor(
     private val store: SafModelStore,
     private val stateStore: ModelStateStore
 ) {
-    suspend fun download(artifact: ModelArtifact): AppResult<Unit> = withContext(Dispatchers.IO) {
+    suspend fun download(
+        artifact: ModelArtifact,
+        onProgress: suspend (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }
+    ): AppResult<Unit> = withContext(Dispatchers.IO) {
         try {
             if (store.treeUri() == null) {
-                return@withContext AppResult.Error("Choose a SAF storage folder before downloading")
+                return@withContext failure(artifact.id, "Choose a SAF storage folder before downloading")
             }
             val fileName = fileName(artifact.url, artifact.id)
             val existingFinal = store.finalFile(artifact.id, fileName)
@@ -38,15 +41,16 @@ class ResumableDownloadManager @Inject constructor(
             }
 
             val tempPair = store.openTemp(artifact.id, fileName)
-                ?: return@withContext AppResult.Error("Unable to create model temporary file in SAF")
+                ?: return@withContext failure(artifact.id, "Unable to create model temporary file in SAF")
             val temp = tempPair.first
             tempPair.second.use { output ->
                 var offset = store.fileLength(temp)
                 store.saveCheckpoint(artifact.id, offset)
+                onProgress(offset, artifact.sizeBytes)
                 if (offset > artifact.sizeBytes) {
                     store.delete(temp)
                     store.clearCheckpoint(artifact.id)
-                    return@withContext AppResult.Error("Temporary model file is larger than manifest size")
+                    return@withContext failure(artifact.id, "Temporary model file is larger than manifest size")
                 }
                 val response = request(artifact, offset)
                 response.use { bodyResponse ->
@@ -54,10 +58,13 @@ class ResumableDownloadManager @Inject constructor(
                         output.close()
                         store.delete(temp)
                         store.clearCheckpoint(artifact.id)
-                        return@withContext download(artifact)
+                        return@withContext download(artifact, onProgress)
                     }
                     if (bodyResponse.code != 200 && bodyResponse.code != 206) {
-                        return@withContext AppResult.Error("Model download failed with HTTP ${bodyResponse.code}")
+                        return@withContext failure(
+                            artifact.id,
+                            "Model download failed with HTTP ${bodyResponse.code}"
+                        )
                     }
                     if (offset > 0L) {
                         val start = bodyResponse.header("Content-Range")
@@ -65,25 +72,30 @@ class ResumableDownloadManager @Inject constructor(
                             ?.substringBefore("-")
                             ?.toLongOrNull()
                         if (bodyResponse.code != 206 || start != offset) {
-                            return@withContext AppResult.Error("Server did not honor the requested byte range")
+                            return@withContext failure(artifact.id, "Server did not honor the requested byte range")
                         }
                     }
                     val responseBody = bodyResponse.body
-                        ?: return@withContext AppResult.Error("Model download returned an empty body")
+                        ?: return@withContext failure(artifact.id, "Model download returned an empty body")
                     responseBody.byteStream().use { input ->
                         val buffer = ByteArray(BUFFER_SIZE)
                         while (true) {
                             coroutineContext.ensureActive()
                             val read = input.read(buffer)
                             if (read < 0) break
-                            output.write(buffer, 0, read)
-                            output.flush()
+                            try {
+                                output.write(buffer, 0, read)
+                                output.flush()
+                            } catch (error: IOException) {
+                                throw SafStorageException("Unable to write model to SAF storage", error)
+                            }
                             offset += read
                             store.saveCheckpoint(artifact.id, offset)
                             stateStore.update(
                                 artifact.id,
                                 ModelStatus.Downloading(offset, artifact.sizeBytes)
                             )
+                            onProgress(offset, artifact.sizeBytes)
                         }
                     }
                 }
@@ -100,12 +112,16 @@ class ResumableDownloadManager @Inject constructor(
                 return@withContext AppResult.Error("SHA-256 verification failed")
             }
             store.renameTemp(temp, fileName)
-                ?: return@withContext AppResult.Error("Unable to atomically rename verified model")
+                ?: return@withContext failure(artifact.id, "Unable to atomically rename verified model")
             store.clearCheckpoint(artifact.id)
             stateStore.update(artifact.id, ModelStatus.Ready(artifact.storageKind))
             AppResult.Success(Unit)
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
+        } catch (error: SafStorageException) {
+            val message = error.message ?: "Unable to use model SAF storage"
+            stateStore.update(artifact.id, ModelStatus.Error(message))
+            AppResult.Error(message, error)
         } catch (error: IOException) {
             stateStore.update(artifact.id, ModelStatus.Error("Network interrupted; retry will resume"))
             AppResult.Error("Network interrupted; retry will resume", error)
@@ -119,6 +135,7 @@ class ResumableDownloadManager @Inject constructor(
         val file = store.finalFile(artifact.id, fileName(artifact.url, artifact.id))
             ?: return@withContext AppResult.Error("Model file is not present in SAF")
         if (store.fileLength(file) != artifact.sizeBytes || sha256(file) != artifact.sha256) {
+            stateStore.update(artifact.id, ModelStatus.Error("Model file failed manifest verification"))
             return@withContext AppResult.Error("Model file failed manifest verification")
         }
         stateStore.update(artifact.id, ModelStatus.Ready(artifact.storageKind))
@@ -132,20 +149,33 @@ class ResumableDownloadManager @Inject constructor(
             .build()
     ).execute()
 
+    private fun failure(artifactId: String, message: String): AppResult<Unit> {
+        stateStore.update(artifactId, ModelStatus.Error(message))
+        return AppResult.Error(message)
+    }
+
     private fun sha256(file: DocumentFile): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        store.openInput(file)?.use { input ->
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                digest.update(buffer, 0, read)
-            }
-        } ?: throw IOException("Unable to read SAF model file")
+        try {
+            store.openInput(file)?.use { input ->
+                val buffer = ByteArray(BUFFER_SIZE)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    digest.update(buffer, 0, read)
+                }
+            } ?: throw SafStorageException("Unable to read SAF model file")
+        } catch (error: SafStorageException) {
+            throw error
+        } catch (error: IOException) {
+            throw SafStorageException("Unable to read SAF model file", error)
+        }
         return digest.digest().joinToString(separator = "") { byte ->
             "%02x".format(byte.toInt() and 0xff)
         }
     }
+
+    private class SafStorageException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
     private fun fileName(url: String, fallback: String): String =
         Uri.parse(url).lastPathSegment?.takeIf { it.isNotBlank() } ?: fallback

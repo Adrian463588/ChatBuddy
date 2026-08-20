@@ -20,6 +20,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.chatbuddy.domain.model.ModelStatus
+import com.chatbuddy.utils.formatBytes
 
 @Composable
 fun ModelGate(
@@ -157,5 +158,3 @@ private fun titleFor(status: ModelStatus): String = when (status) {
     ModelStatus.Unavailable -> "Local model unavailable"
     is ModelStatus.Ready -> "Local model ready"
 }
-
-private fun formatBytes(bytes: Long): String = "${(bytes.coerceAtLeast(0L) / 1_000_000)} MB"

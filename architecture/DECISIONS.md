@@ -45,3 +45,18 @@ This follows Android's WorkManager guidance for observing intermediate progress 
 
 - https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/observe
 - https://developer.android.com/develop/ui/compose/components/progress?authuser=19
+
+## ADR-010 — SAF resumable writes use the Android-supported append mode
+
+`ContentResolver.openOutputStream` accepts `wa` for write-append; `rwa` is not a valid Android mode. The download manager reads the real `.tmp` length, requests `bytes=<offset>-`, appends with `wa`, checkpoints after writes, verifies size and SHA-256, and only then renames the file to its final name. This prevents a pre-request SAF failure while preserving interrupted-download resume.
+
+Reference: https://developer.android.com/reference/android/content/ContentResolver
+
+## ADR-011 — large model transfers are foreground work and failures stay actionable
+
+Artifacts over 100 MB use WorkManager foreground execution with a `dataSync` notification so the 2.84 GB Gemma transfer is not silently limited to the ordinary worker window. Smaller bundles keep the normal worker path. Network `IOException` remains retryable with exponential backoff and the SAF checkpoint is preserved; SAF write/read failures, HTTP failures, range mismatches, checksum failures, and atomic-rename failures become an inline error with a real Retry action. Retrying replaces stale unique work so the button is effective.
+
+References:
+
+- https://developer.android.com/reference/androidx/work/CoroutineWorker
+- https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/manage-work

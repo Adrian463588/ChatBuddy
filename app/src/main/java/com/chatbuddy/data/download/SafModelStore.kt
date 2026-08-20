@@ -48,7 +48,9 @@ class SafModelStore @Inject constructor(
         val existing = parent.findFile(tempName(artifactId, fileName))
         val file = existing ?: parent.createFile("application/octet-stream", tempName(artifactId, fileName))
             ?: return null
-        val stream = context.contentResolver.openOutputStream(file.uri, "rwa") ?: return null
+        // ContentResolver supports "wa" for write-append. "rwa" is not a valid
+        // Android mode and fails before the HTTP request can write its first byte.
+        val stream = context.contentResolver.openOutputStream(file.uri, SAF_APPEND_MODE) ?: return null
         return file to stream
     }
 
@@ -86,5 +88,6 @@ class SafModelStore @Inject constructor(
         private const val PREFERENCES = "chatbuddy_saf"
         private const val KEY_TREE_URI = "tree_uri"
         private const val MODELS_DIRECTORY = "ChatBuddyModels"
+        private const val SAF_APPEND_MODE = "wa"
     }
 }
