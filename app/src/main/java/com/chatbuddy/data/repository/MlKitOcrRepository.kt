@@ -1,6 +1,7 @@
 package com.chatbuddy.data.repository
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.OcrResult
@@ -35,9 +36,11 @@ class MlKitOcrRepository @Inject constructor(
                     "ko" -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
                     else -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
                 }
-                val image = InputImage.fromFilePath(context, Uri.parse(uri))
+                val imageUri = Uri.parse(uri)
+                val image = InputImage.fromFilePath(context, imageUri)
+                val (imageWidth, imageHeight) = readImageDimensions(imageUri)
                 val result = recognizer.process(image).awaitTask()
-                AppResult.Success(result.toDomain(languageTag))
+                AppResult.Success(result.toDomain(languageTag, imageWidth, imageHeight))
             } catch (error: Exception) {
                 AppResult.Error("On-device OCR failed", error)
             } finally {
@@ -45,10 +48,24 @@ class MlKitOcrRepository @Inject constructor(
             }
         }
 
-    private fun Text.toDomain(languageTag: String): OcrResult {
+    private fun Text.toDomain(languageTag: String, imageWidth: Int, imageHeight: Int): OcrResult {
         val blocks = textBlocks.flatMap { block -> block.lines.mapNotNull { line -> line.toDomain() } }
-        return OcrResult(text = text, blocks = blocks, languageTag = languageTag)
+        return OcrResult(
+            text = text,
+            blocks = blocks,
+            languageTag = languageTag,
+            imageWidth = imageWidth,
+            imageHeight = imageHeight
+        )
     }
+
+    private fun readImageDimensions(uri: Uri): Pair<Int, Int> = runCatching {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+            BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor, null, options)
+        }
+        options.outWidth.coerceAtLeast(0) to options.outHeight.coerceAtLeast(0)
+    }.getOrDefault(0 to 0)
 
     private fun Text.Line.toDomain(): OcrTextBlock? {
         val box = boundingBox ?: return null

@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -35,6 +37,7 @@ import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,9 +69,12 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
@@ -84,10 +90,13 @@ import com.chatbuddy.presentation.translate.LanguageDropdown
 import com.chatbuddy.presentation.translate.TranslationUiState
 import com.chatbuddy.presentation.ocr.OcrViewModel
 import com.chatbuddy.presentation.ocr.CameraPreview
+import com.chatbuddy.presentation.ocr.OcrBoundingBoxOverlay
+import com.chatbuddy.presentation.ocr.OcrImagePreview
 import com.chatbuddy.presentation.settings.PersonaViewModel
 import com.chatbuddy.presentation.rag.DocumentViewModel
 import com.chatbuddy.utils.formatBytes
 import com.chatbuddy.domain.model.ChatMessage
+import com.chatbuddy.domain.model.OcrResult
 import com.chatbuddy.domain.model.Persona
 import java.util.UUID
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -135,7 +144,8 @@ fun ChatBuddyApp(windowSizeClass: WindowSizeClass, viewModel: HomeViewModel) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (compact) Modifier.padding(horizontal = 16.dp) else Modifier.width(600.dp))
+                    .then(if (compact) Modifier.padding(horizontal = 16.dp) else Modifier.padding(horizontal = 24.dp))
+                    .widthIn(max = 600.dp)
                     .imePadding()
                     .verticalScroll(rememberScrollState())
                     .padding(vertical = 16.dp),
@@ -263,8 +273,13 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
 @Composable
 private fun TranslationModelCard(
     state: TranslationUiState,
-    viewModel: TranslationViewModel
+    viewModel: TranslationViewModel,
+    compact: Boolean = false
 ) {
+    if (compact) {
+        CompactTranslationModelCard(state, viewModel)
+        return
+    }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -288,6 +303,38 @@ private fun TranslationModelCard(
                 }
             }
             state.modelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+    }
+}
+
+@Composable
+private fun CompactTranslationModelCard(
+    state: TranslationUiState,
+    viewModel: TranslationViewModel
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val status = when {
+                    state.modelDownloading -> "Downloading language pack"
+                    state.modelChecking -> "Checking translation"
+                    state.modelReady -> "Offline translation ready"
+                    else -> "Translation needs a language pack"
+                }
+                Text(status, style = MaterialTheme.typography.titleSmall)
+                Text("ML Kit offline provider", style = MaterialTheme.typography.bodySmall)
+                state.modelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+            when {
+                state.modelDownloading -> CircularProgressIndicator(modifier = Modifier.width(24.dp), strokeWidth = 2.dp)
+                !state.modelReady && !state.modelChecking -> OutlinedButton(onClick = viewModel::downloadLanguageModels) {
+                    Text("Get pack")
+                }
+            }
         }
     }
 }
@@ -370,7 +417,10 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
     val translationViewModel = hiltViewModel<TranslationViewModel>()
     val ocrState by viewModel.state.collectAsStateWithLifecycleCompat()
     val translationState by translationViewModel.state.collectAsStateWithLifecycleCompat()
+    val ocrResult = ocrState.result
+    val selectedImageUri = ocrState.imageUri
     val context = LocalContext.current
+    var cameraError by rememberSaveable { mutableStateOf<String?>(null) }
     var cameraEnabled by rememberSaveable {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -382,7 +432,14 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
     }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         cameraEnabled = granted
-        if (!granted) viewModel.setCameraError("Camera permission is required for live OCR.")
+        if (granted) {
+            cameraError = null
+            viewModel.clearCameraError()
+        } else {
+            val message = "Camera permission is required for live OCR."
+            cameraError = message
+            viewModel.setCameraError(message)
+        }
     }
     val clipboard = LocalClipboardManager.current
     LaunchedEffect(translationState.sourceLanguage) {
@@ -394,17 +451,17 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("OCR", style = MaterialTheme.typography.headlineSmall)
-        Text("Point the camera at text or choose an image.")
         LanguageSelectorRow(translationState, translationViewModel, "Swap OCR and translation languages")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f)) {
+            Button(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f)) {
                 Text("Choose image")
             }
             OutlinedButton(
                 onClick = {
                     if (cameraEnabled) {
                         cameraEnabled = false
+                        cameraError = null
+                        viewModel.clearCameraError()
                     } else if (
                         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                         PackageManager.PERMISSION_GRANTED
@@ -417,55 +474,117 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
                 modifier = Modifier.weight(1f)
             ) { Text(if (cameraEnabled) "Stop camera" else "Use camera") }
         }
-        TranslationModelCard(translationState, translationViewModel)
-        if (cameraEnabled) {
+        TranslationModelCard(translationState, translationViewModel, compact = true)
+        if (cameraEnabled && cameraError == null) {
             CameraPreview(
                 analyzer = viewModel.cameraAnalyzer,
-                onError = viewModel::setCameraError,
+                onError = { message ->
+                    cameraError = message
+                    viewModel.setCameraError(message)
+                },
+                onReady = {
+                    cameraError = null
+                    viewModel.clearCameraError()
+                },
+                overlay = { OcrBoundingBoxOverlay(ocrResult) },
                 modifier = Modifier.semantics { contentDescription = "Live camera OCR preview" }
             )
             Text("Live OCR is running", style = MaterialTheme.typography.labelMedium)
+        } else if (cameraEnabled && cameraError != null) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Camera unavailable", style = MaterialTheme.typography.titleSmall)
+                    cameraError?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                    OutlinedButton(onClick = {
+                        cameraError = null
+                        viewModel.clearCameraError()
+                    }) {
+                        Text("Retry camera")
+                    }
+                }
+            }
+        } else if (selectedImageUri != null) {
+            OcrImagePreview(
+                uri = selectedImageUri,
+                result = ocrResult,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(4f / 3f)
+                    .heightIn(min = 220.dp, max = 420.dp)
+            )
+        } else if (ocrResult == null) {
+            OcrEmptyState()
         }
         if (ocrState.processing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         ocrState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        ocrState.result?.let { result ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Detected text", style = MaterialTheme.typography.titleMedium)
-                    if (result.text.isBlank()) {
-                        Text("No text detected yet.")
-                    } else {
-                        SelectionContainer { Text(result.text) }
-                    }
-                    Row {
-                        IconButton(
-                            enabled = result.text.isNotBlank(),
-                            onClick = { clipboard.setText(AnnotatedString(result.text)) }
-                        ) { Icon(Icons.Outlined.ContentCopy, "Copy OCR text") }
-                        IconButton(
-                            enabled = result.text.isNotBlank(),
-                            onClick = { homeViewModel.sendToChat(result.text) }
-                        ) { Icon(Icons.AutoMirrored.Outlined.Chat, "Send OCR text to chat") }
-                        IconButton(
-                            enabled = result.text.isNotBlank(),
-                            onClick = { homeViewModel.sendToTranslation(result.text) }
-                        ) { Icon(Icons.Outlined.Language, "Send OCR text to translation") }
-                    }
-                    OutlinedButton(
-                        enabled = result.text.isNotBlank(),
-                        onClick = { translationViewModel.setSourceText(result.text) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("Translate detected text") }
-                    if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    translationState.result?.let { translated ->
-                        Text("Live translation", style = MaterialTheme.typography.titleSmall)
-                        SelectionContainer { Text(translated.text) }
-                        Text(providerLabel(translated.provider), style = MaterialTheme.typography.bodySmall)
-                    }
-                    translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    Text("${result.blocks.size} text blocks · ${result.languageTag}", style = MaterialTheme.typography.bodySmall)
-                }
+        ocrResult?.takeIf { it.text.isNotBlank() }?.let { result ->
+            OcrResultPanel(
+                result = result,
+                translationState = translationState,
+                onCopy = { clipboard.setText(AnnotatedString(result.text)) },
+                onSendToChat = { homeViewModel.sendToChat(result.text) },
+                onSendToTranslation = { homeViewModel.sendToTranslation(result.text) },
+                onTranslate = { translationViewModel.setSourceText(result.text) }
+            )
+        }
+        if (!cameraEnabled && ocrResult != null && ocrResult.text.isBlank() && !ocrState.processing) {
+            Text("No text found in this image.", style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun OcrEmptyState() {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(Icons.Outlined.CameraAlt, contentDescription = null)
+            Text("Ready to scan", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Choose a photo or start the camera.",
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun OcrResultPanel(
+    result: OcrResult,
+    translationState: TranslationUiState,
+    onCopy: () -> Unit,
+    onSendToChat: () -> Unit,
+    onSendToTranslation: () -> Unit,
+    onTranslate: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite }
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Detected text", style = MaterialTheme.typography.titleMedium)
+            SelectionContainer { Text(result.text) }
+            Row {
+                IconButton(onClick = onCopy) { Icon(Icons.Outlined.ContentCopy, "Copy OCR text") }
+                IconButton(onClick = onSendToChat) { Icon(Icons.AutoMirrored.Outlined.Chat, "Send OCR text to chat") }
+                IconButton(onClick = onSendToTranslation) { Icon(Icons.Outlined.Language, "Send OCR text to translation") }
             }
+            OutlinedButton(onClick = onTranslate, modifier = Modifier.fillMaxWidth()) {
+                Text("Translate detected text")
+            }
+            if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            translationState.result?.let { translated ->
+                Text("Live translation", style = MaterialTheme.typography.titleSmall)
+                SelectionContainer { Text(translated.text) }
+                Text(providerLabel(translated.provider), style = MaterialTheme.typography.bodySmall)
+            }
+            translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Text("${result.blocks.size} text blocks · ${result.languageTag}", style = MaterialTheme.typography.bodySmall)
         }
     }
 }

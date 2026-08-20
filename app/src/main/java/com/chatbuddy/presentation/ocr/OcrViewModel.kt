@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 
 data class OcrUiState(
     val result: OcrResult? = null,
+    val imageUri: String? = null,
     val processing: Boolean = false,
     val error: String? = null
 )
@@ -31,7 +32,9 @@ class OcrViewModel @Inject constructor(
     init {
         cameraAnalyzer.setCallbacks(
             onResult = { result ->
-                _state.update { it.copy(result = result, processing = false, error = null) }
+                _state.update {
+                    it.copy(result = result, imageUri = null, processing = false, error = null)
+                }
             },
             onError = { message ->
                 _state.update { it.copy(processing = false, error = message) }
@@ -41,7 +44,9 @@ class OcrViewModel @Inject constructor(
 
     fun recognize(uri: String, languageTag: String = "en") {
         viewModelScope.launch {
-            _state.update { it.copy(processing = true, error = null) }
+            _state.update {
+                it.copy(result = null, imageUri = uri, processing = true, error = null)
+            }
             when (val result = repository.recognizeImage(uri, languageTag)) {
                 is AppResult.Success -> _state.update { it.copy(result = result.data, processing = false) }
                 is AppResult.Error -> _state.update { it.copy(processing = false, error = result.message) }
@@ -56,7 +61,12 @@ class OcrViewModel @Inject constructor(
         _state.update { it.copy(processing = false, error = message) }
     }
 
+    fun clearCameraError() {
+        _state.update { it.copy(error = null) }
+    }
+
     override fun onCleared() {
+        cameraAnalyzer.clearCallbacks()
         cameraAnalyzer.close()
         super.onCleared()
     }

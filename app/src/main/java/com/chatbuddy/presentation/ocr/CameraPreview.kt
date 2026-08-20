@@ -6,7 +6,10 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -25,6 +28,8 @@ import java.util.concurrent.Executors
 fun CameraPreview(
     analyzer: ImageAnalysis.Analyzer,
     onError: (String) -> Unit,
+    onReady: () -> Unit = {},
+    overlay: @Composable BoxScope.() -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -37,6 +42,7 @@ fun CameraPreview(
     }
     val currentAnalyzer = rememberUpdatedState(analyzer)
     val currentOnError = rememberUpdatedState(onError)
+    val currentOnReady = rememberUpdatedState(onReady)
     DisposableEffect(lifecycleOwner, previewView) {
         var provider: ProcessCameraProvider? = null
         var analysis: ImageAnalysis? = null
@@ -64,6 +70,7 @@ fun CameraPreview(
                 imageAnalysis.setAnalyzer(analysisExecutor, currentAnalyzer.value)
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
+                currentOnReady.value()
             } catch (error: Exception) {
                 currentOnError.value(
                     error.message?.takeIf { it.isNotBlank() }
@@ -78,11 +85,16 @@ fun CameraPreview(
             analysisExecutor.shutdown()
         }
     }
-    AndroidView(
-        factory = { previewView },
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(4f / 3f)
             .heightIn(min = 220.dp, max = 420.dp)
-    )
+    ) {
+        AndroidView(
+            factory = { previewView },
+            modifier = Modifier.fillMaxSize()
+        )
+        overlay()
+    }
 }

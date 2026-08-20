@@ -13,6 +13,7 @@ import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -21,15 +22,26 @@ class CameraOcrAnalyzer @Inject constructor() : ImageAnalysis.Analyzer {
     private val recognizers = mutableMapOf<RecognizerKind, TextRecognizer>()
     @Volatile
     private var languageTag: String = "en"
+    private val frameInFlight = AtomicBoolean(false)
+    @Volatile
+    private var closed = false
+    @Volatile
     private var onResult: (OcrResult) -> Unit = {}
+    @Volatile
     private var onError: (String) -> Unit = {}
 
     fun setCallbacks(
         onResult: (OcrResult) -> Unit,
         onError: (String) -> Unit
     ) {
+        closed = false
         this.onResult = onResult
         this.onError = onError
+    }
+
+    fun clearCallbacks() {
+        onResult = {}
+        onError = {}
     }
 
     fun setLanguageTag(languageTag: String) {
@@ -38,26 +50,44 @@ class CameraOcrAnalyzer @Inject constructor() : ImageAnalysis.Analyzer {
 
     @SuppressLint("UnsafeOptInUsageError")
     override fun analyze(imageProxy: ImageProxy) {
+        if (closed || !frameInFlight.compareAndSet(false, true)) {
+            imageProxy.close()
+            return
+        }
         val mediaImage = imageProxy.image
         if (mediaImage == null) {
+            frameInFlight.set(false)
             imageProxy.close()
             return
         }
 
         try {
             val selectedLanguageTag = languageTag
-            val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+            val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+            val imageWidth = if (rotationDegrees % 180 == 0) imageProxy.width else imageProxy.height
+            val imageHeight = if (rotationDegrees % 180 == 0) imageProxy.height else imageProxy.width
+            val inputImage = InputImage.fromMediaImage(mediaImage, rotationDegrees)
             recognizerFor(selectedLanguageTag).process(inputImage)
-                .addOnSuccessListener { text -> onResult(text.toDomain(selectedLanguageTag)) }
-                .addOnFailureListener { error -> onError(error.message ?: "On-device OCR failed.") }
-                .addOnCompleteListener { imageProxy.close() }
+                .addOnSuccessListener { text ->
+                    if (!closed) onResult(text.toDomain(selectedLanguageTag, imageWidth, imageHeight))
+                }
+                .addOnFailureListener { error ->
+                    if (!closed) onError(error.message ?: "On-device OCR failed.")
+                }
+                .addOnCompleteListener {
+                    frameInFlight.set(false)
+                    imageProxy.close()
+                }
         } catch (error: Exception) {
+            frameInFlight.set(false)
             imageProxy.close()
-            onError(error.message ?: "On-device OCR failed.")
+            if (!closed) onError(error.message ?: "On-device OCR failed.")
         }
     }
 
     fun close() {
+        closed = true
+        clearCallbacks()
         recognizers.values.forEach(TextRecognizer::close)
         recognizers.clear()
     }
@@ -74,10 +104,12 @@ class CameraOcrAnalyzer @Inject constructor() : ImageAnalysis.Analyzer {
         }
     }
 
-    private fun Text.toDomain(languageTag: String): OcrResult = OcrResult(
+    private fun Text.toDomain(languageTag: String, imageWidth: Int, imageHeight: Int): OcrResult = OcrResult(
         text = text,
         blocks = textBlocks.flatMap { block -> block.lines.mapNotNull { line -> line.toDomain() } },
-        languageTag = languageTag
+        languageTag = languageTag,
+        imageWidth = imageWidth,
+        imageHeight = imageHeight
     )
 
     private fun Text.Line.toDomain(): OcrTextBlock? {

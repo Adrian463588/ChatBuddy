@@ -11,5 +11,7 @@ data class OcrTextBlock(
 data class OcrResult(
     val text: String,
     val blocks: List<OcrTextBlock>,
-    val languageTag: String
+    val languageTag: String,
+    val imageWidth: Int = 0,
+    val imageHeight: Int = 0
 )
