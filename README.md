@@ -85,11 +85,11 @@ Device baseline yang direncanakan: Samsung `SM-G988B`, Android 13 (`RRCN3008VYE`
 - `:app:testDebugUnitTest` — pass.
 - `:app:lintDebug` — pass; lint menyisakan warning dependency/deprecation, tanpa error.
 - `:app:externalNativeBuildDebug` dan `:app:assembleDebug` — pass untuk `arm64-v8a` dan `armeabi-v7a`.
-- `:app:connectedDebugAndroidTest` — 2/2 pass pada `SM-G988B - 13`.
+- `:app:connectedDebugAndroidTest` — 5/5 pass pada `SM-G988B - 13`, termasuk editable language dropdown.
 - APK terbaru berhasil dipasang dan diluncurkan pada `RRCN3008VYE`; accessibility dump melaporkan package `com.chatbuddy`, tombol SAF, dan empat tab navigasi. Tidak ada `FATAL EXCEPTION` pada smoke log.
 - Preview aktual tersedia untuk onboarding, Translate, dropdown bahasa Translate, OCR, Settings, dan landscape. `preview/chatbuddy-device.png` adalah preview utama README.
-- `2026-08-20`: layar Translate diverifikasi pada `SM-G988B` dengan exposed dropdown `From`/`To`, popup daftar bahasa, tombol swap, dan layout compact portrait; tidak ada chip selector.
-- APK debug: 131,333,318 bytes; SHA-256 `31af09d3e5e7c715e4616d337263ed0beeb8bcea4dd82daca524892731e92737`.
+- `2026-08-20`: layar Translate diverifikasi pada `SM-G988B` dengan exposed autocomplete dropdown `From`/`To`, popup daftar bahasa, keyboard input, tombol swap, dan layout compact portrait; tidak ada chip selector.
+- APK debug: 140,153,118 bytes; SHA-256 `e29a5ab3bc63eef31082d38f5882204840390645e4b861d6f7bdb81be24cbe4a`.
 
 Evidence ini membuktikan build, UI shell, navigation, dan launch; tidak membuktikan inferensi atau ingestion tanpa artifact model/runtime yang benar-benar diunduh dan diverifikasi.
 
@@ -97,7 +97,7 @@ Evidence ini membuktikan build, UI shell, navigation, dan launch; tidak membukti
 
 - `:app:compileDebugKotlin` dan `:app:compileDebugAndroidTestKotlin` — pass.
 - `:app:testDebugUnitTest`, `:app:lintDebug`, dan `:app:assembleDebug` — pass.
-- `:app:connectedDebugAndroidTest` — 3/3 pass pada `SM-G988B - 13`, termasuk callback Download dan Pause pada ModelGate.
+- `:app:connectedDebugAndroidTest` — 5/5 pass pada `SM-G988B - 13`, termasuk callback Download/Pause pada ModelGate dan filtering/selection language dropdown.
 - APK debug berhasil dipasang dan cold-launched pada `RRCN3008VYE`; `dumpsys` mengonfirmasi `com.chatbuddy/.MainActivity` sebagai resumed dan smoke log tidak menunjukkan crash aplikasi.
 - Transfer Gemma tidak dimulai otomatis selama smoke karena artifact sekitar 2.84 GB; state dan callback diuji tanpa menggunakan bandwidth/storage pengguna secara diam-diam. Sesi transfer nyata tetap membutuhkan tap pengguna, folder SAF, jaringan, checksum, dan ruang penyimpanan yang cukup.
 

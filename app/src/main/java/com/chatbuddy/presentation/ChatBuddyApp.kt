@@ -34,11 +34,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -74,13 +71,14 @@ import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import com.chatbuddy.domain.model.ModelStatus
-import com.chatbuddy.domain.model.LanguageOption
+import com.chatbuddy.domain.model.TranslationProviderKind
 import com.chatbuddy.presentation.common.ModelGate
 import com.chatbuddy.presentation.home.HomeTab
 import com.chatbuddy.presentation.home.HomeUiState
 import com.chatbuddy.presentation.home.HomeViewModel
 import com.chatbuddy.presentation.chat.ChatViewModel
 import com.chatbuddy.presentation.translate.TranslationViewModel
+import com.chatbuddy.presentation.translate.LanguageDropdown
 import com.chatbuddy.presentation.ocr.OcrViewModel
 import com.chatbuddy.presentation.ocr.CameraPreview
 import com.chatbuddy.presentation.settings.PersonaViewModel
@@ -227,7 +225,6 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Realtime translation", style = MaterialTheme.typography.headlineSmall)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -257,15 +254,16 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
         OutlinedTextField(
             value = translationState.sourceText,
             onValueChange = viewModel::setSourceText,
-            label = { Text("Source text") },
+            label = { Text("Enter text") },
             modifier = Modifier.fillMaxWidth(),
-            minLines = 5
+            minLines = 4,
+            maxLines = 8
         )
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     translationState.result?.text.orEmpty().ifBlank {
-                        "Translation is unavailable until an offline provider is ready."
+                        "Offline translation model required."
                     }
                 )
                 if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -275,62 +273,19 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
                         val context = LocalContext.current
                         IconButton(onClick = { clipboard.setText(AnnotatedString(result.text)) }) { Icon(Icons.Outlined.ContentCopy, "Copy translation") }
                         IconButton(onClick = { shareText(context, result.text) }) { Icon(Icons.Outlined.Share, "Share translation") }
-                        Text(result.provider.name, modifier = Modifier.padding(start = 8.dp, top = 12.dp), style = MaterialTheme.typography.labelSmall)
+                        Text(providerLabel(result.provider), modifier = Modifier.padding(start = 8.dp, top = 12.dp), style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         }
-        Text("Inference is local. ML Kit language packs are managed by Play services and are not SAF-persistent.", style = MaterialTheme.typography.bodySmall)
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LanguageDropdown(
-    label: String,
-    selected: String,
-    languages: List<LanguageOption>,
-    onSelected: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var expanded by rememberSaveable(label) { mutableStateOf(false) }
-    val selectedLanguage = languages.firstOrNull { it.tag == selected }
-    val isAvailable = languages.isNotEmpty()
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it },
-        modifier = modifier
-    ) {
-        OutlinedTextField(
-            value = selectedLanguage?.displayName ?: selected.ifBlank { "Unavailable" },
-            onValueChange = {},
-            readOnly = true,
-            enabled = isAvailable,
-            singleLine = true,
-            label = { Text(label) },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier
-                .menuAnchor()
-                .fillMaxWidth()
-                .semantics { contentDescription = "$label language selector" }
-        )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            languages.forEach { language ->
-                DropdownMenuItem(
-                    text = { Text(language.displayName) },
-                    onClick = {
-                        expanded = false
-                        onSelected(language.tag)
-                    }
-                )
-            }
-        }
-    }
+private fun providerLabel(provider: TranslationProviderKind): String = when (provider) {
+    TranslationProviderKind.ML_KIT_PLAY_SERVICES -> "Play services"
+    TranslationProviderKind.LOCAL_OPUS_ONNX -> "Local model"
+    TranslationProviderKind.UNAVAILABLE -> "Unavailable"
 }
 
 @Composable
