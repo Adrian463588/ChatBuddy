@@ -14,6 +14,12 @@ data class TranslationRequest(
     val targetLanguage: String
 )
 
+data class TranslationModelStatus(
+    val sourceLanguage: String,
+    val targetLanguage: String,
+    val ready: Boolean
+)
+
 data class TranslationResult(
     val text: String,
     val provider: TranslationProviderKind,

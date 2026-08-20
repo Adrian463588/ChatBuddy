@@ -1,11 +1,13 @@
 package com.chatbuddy.presentation
 
 import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -79,6 +81,7 @@ import com.chatbuddy.presentation.home.HomeViewModel
 import com.chatbuddy.presentation.chat.ChatViewModel
 import com.chatbuddy.presentation.translate.TranslationViewModel
 import com.chatbuddy.presentation.translate.LanguageDropdown
+import com.chatbuddy.presentation.translate.TranslationUiState
 import com.chatbuddy.presentation.ocr.OcrViewModel
 import com.chatbuddy.presentation.ocr.CameraPreview
 import com.chatbuddy.presentation.settings.PersonaViewModel
@@ -88,6 +91,7 @@ import com.chatbuddy.domain.model.ChatMessage
 import com.chatbuddy.domain.model.Persona
 import java.util.UUID
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.core.content.ContextCompat
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3WindowSizeClassApi::class)
@@ -226,32 +230,8 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            LanguageDropdown(
-                label = "From",
-                selected = translationState.sourceLanguage,
-                languages = translationState.languages,
-                onSelected = viewModel::setSourceLanguage,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(
-                onClick = viewModel::swapLanguages,
-                modifier = Modifier.semantics { contentDescription = "Swap source and target languages" }
-            ) {
-                Icon(Icons.Outlined.SwapHoriz, contentDescription = null)
-            }
-            LanguageDropdown(
-                label = "To",
-                selected = translationState.targetLanguage,
-                languages = translationState.languages,
-                onSelected = viewModel::setTargetLanguage,
-                modifier = Modifier.weight(1f)
-            )
-        }
+        LanguageSelectorRow(translationState, viewModel, "Swap source and target languages")
+        TranslationModelCard(translationState, viewModel)
         OutlinedTextField(
             value = translationState.sourceText,
             onValueChange = viewModel::setSourceText,
@@ -260,24 +240,119 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
             minLines = 4,
             maxLines = 8
         )
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    translationState.result?.text.orEmpty().ifBlank {
-                        "Offline translation model required."
+        if (translationState.loading || translationState.result != null || translationState.error != null) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    translationState.result?.let { result ->
+                        Row {
+                            val clipboard = LocalClipboardManager.current
+                            val context = LocalContext.current
+                            IconButton(onClick = { clipboard.setText(AnnotatedString(result.text)) }) { Icon(Icons.Outlined.ContentCopy, "Copy translation") }
+                            IconButton(onClick = { shareText(context, result.text) }) { Icon(Icons.Outlined.Share, "Share translation") }
+                            Text(providerLabel(result.provider), modifier = Modifier.padding(start = 8.dp, top = 12.dp), style = MaterialTheme.typography.labelSmall)
+                        }
                     }
-                )
-                if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                translationState.result?.let { result ->
-                    Row {
-                        val clipboard = LocalClipboardManager.current
-                        val context = LocalContext.current
-                        IconButton(onClick = { clipboard.setText(AnnotatedString(result.text)) }) { Icon(Icons.Outlined.ContentCopy, "Copy translation") }
-                        IconButton(onClick = { shareText(context, result.text) }) { Icon(Icons.Outlined.Share, "Share translation") }
-                        Text(providerLabel(result.provider), modifier = Modifier.padding(start = 8.dp, top = 12.dp), style = MaterialTheme.typography.labelSmall)
-                    }
+                    translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
-                translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TranslationModelCard(
+    state: TranslationUiState,
+    viewModel: TranslationViewModel
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val status = when {
+                state.modelDownloading -> "Downloading offline language pack…"
+                state.modelChecking -> "Checking offline language pack…"
+                state.modelReady -> "Offline translation ready"
+                else -> "Download language pack to start"
+            }
+            Text(status, style = MaterialTheme.typography.titleSmall)
+            Text("Provider: Play services managed model", style = MaterialTheme.typography.bodySmall)
+            when {
+                state.modelDownloading -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                !state.modelReady && !state.modelChecking -> Button(
+                    onClick = viewModel::downloadLanguageModels,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Download language pack")
+                }
+            }
+            state.modelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+    }
+}
+
+@Composable
+private fun LanguageSelectorRow(
+    state: TranslationUiState,
+    viewModel: TranslationViewModel,
+    swapDescription: String
+) {
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        if (maxWidth < 360.dp) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                LanguageDropdown(
+                    label = "From",
+                    selected = state.sourceLanguage,
+                    languages = state.languages,
+                    onSelected = viewModel::setSourceLanguage,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                IconButton(
+                    onClick = viewModel::swapLanguages,
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .semantics { contentDescription = swapDescription }
+                ) {
+                    Icon(Icons.Outlined.SwapHoriz, contentDescription = null)
+                }
+                LanguageDropdown(
+                    label = "To",
+                    selected = state.targetLanguage,
+                    languages = state.languages,
+                    onSelected = viewModel::setTargetLanguage,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                LanguageDropdown(
+                    label = "From",
+                    selected = state.sourceLanguage,
+                    languages = state.languages,
+                    onSelected = viewModel::setSourceLanguage,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(
+                    onClick = viewModel::swapLanguages,
+                    modifier = Modifier.semantics { contentDescription = swapDescription }
+                ) {
+                    Icon(Icons.Outlined.SwapHoriz, contentDescription = null)
+                }
+                LanguageDropdown(
+                    label = "To",
+                    selected = state.targetLanguage,
+                    languages = state.languages,
+                    onSelected = viewModel::setTargetLanguage,
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
     }
@@ -295,29 +370,61 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
     val translationViewModel = hiltViewModel<TranslationViewModel>()
     val ocrState by viewModel.state.collectAsStateWithLifecycleCompat()
     val translationState by translationViewModel.state.collectAsStateWithLifecycleCompat()
-    var cameraEnabled by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
+    var cameraEnabled by rememberSaveable {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { viewModel.recognize(it.toString()) }
+        uri?.let { viewModel.recognize(it.toString(), translationState.sourceLanguage) }
     }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         cameraEnabled = granted
+        if (!granted) viewModel.setCameraError("Camera permission is required for live OCR.")
     }
     val clipboard = LocalClipboardManager.current
+    LaunchedEffect(translationState.sourceLanguage) {
+        viewModel.setCameraLanguage(translationState.sourceLanguage)
+    }
+    LaunchedEffect(cameraEnabled, ocrState.result?.text) {
+        if (cameraEnabled) {
+            ocrState.result?.text?.takeIf(String::isNotBlank)?.let(translationViewModel::setSourceText)
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("OCR", style = MaterialTheme.typography.headlineSmall)
-        Text("Choose an image for on-device text recognition. CameraX capture is available in the camera flow when permission and provider are ready.")
+        Text("Point the camera at text or choose an image.")
+        LanguageSelectorRow(translationState, translationViewModel, "Swap OCR and translation languages")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f)) { Text("Choose image") }
+            OutlinedButton(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f)) {
+                Text("Choose image")
+            }
             OutlinedButton(
-                onClick = { cameraPermission.launch(Manifest.permission.CAMERA) },
+                onClick = {
+                    if (cameraEnabled) {
+                        cameraEnabled = false
+                    } else if (
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        cameraEnabled = true
+                    } else {
+                        cameraPermission.launch(Manifest.permission.CAMERA)
+                    }
+                },
                 modifier = Modifier.weight(1f)
-            ) { Text(if (cameraEnabled) "Camera on" else "Use camera") }
+            ) { Text(if (cameraEnabled) "Stop camera" else "Use camera") }
         }
+        TranslationModelCard(translationState, translationViewModel)
         if (cameraEnabled) {
             CameraPreview(
-                analyzeFrame = viewModel::analyzeCameraFrame,
+                analyzer = viewModel.cameraAnalyzer,
+                onError = viewModel::setCameraError,
                 modifier = Modifier.semantics { contentDescription = "Live camera OCR preview" }
             )
+            Text("Live OCR is running", style = MaterialTheme.typography.labelMedium)
         }
         if (ocrState.processing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         ocrState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -325,20 +432,35 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Detected text", style = MaterialTheme.typography.titleMedium)
-                    SelectionContainer { Text(result.text) }
+                    if (result.text.isBlank()) {
+                        Text("No text detected yet.")
+                    } else {
+                        SelectionContainer { Text(result.text) }
+                    }
                     Row {
-                        IconButton(onClick = { clipboard.setText(AnnotatedString(result.text)) }) { Icon(Icons.Outlined.ContentCopy, "Copy OCR text") }
-                        IconButton(onClick = { homeViewModel.sendToChat(result.text) }) { Icon(Icons.AutoMirrored.Outlined.Chat, "Send OCR text to chat") }
-                        IconButton(onClick = { homeViewModel.sendToTranslation(result.text) }) { Icon(Icons.Outlined.Language, "Send OCR text to translation") }
+                        IconButton(
+                            enabled = result.text.isNotBlank(),
+                            onClick = { clipboard.setText(AnnotatedString(result.text)) }
+                        ) { Icon(Icons.Outlined.ContentCopy, "Copy OCR text") }
+                        IconButton(
+                            enabled = result.text.isNotBlank(),
+                            onClick = { homeViewModel.sendToChat(result.text) }
+                        ) { Icon(Icons.AutoMirrored.Outlined.Chat, "Send OCR text to chat") }
+                        IconButton(
+                            enabled = result.text.isNotBlank(),
+                            onClick = { homeViewModel.sendToTranslation(result.text) }
+                        ) { Icon(Icons.Outlined.Language, "Send OCR text to translation") }
                     }
                     OutlinedButton(
+                        enabled = result.text.isNotBlank(),
                         onClick = { translationViewModel.setSourceText(result.text) },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("Translate detected text") }
+                    if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     translationState.result?.let { translated ->
-                        Text("Translated image text", style = MaterialTheme.typography.titleSmall)
+                        Text("Live translation", style = MaterialTheme.typography.titleSmall)
                         SelectionContainer { Text(translated.text) }
-                        Text(translated.provider.name, style = MaterialTheme.typography.bodySmall)
+                        Text(providerLabel(translated.provider), style = MaterialTheme.typography.bodySmall)
                     }
                     translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     Text("${result.blocks.size} text blocks · ${result.languageTag}", style = MaterialTheme.typography.bodySmall)

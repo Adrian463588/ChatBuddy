@@ -6,7 +6,6 @@ import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.OcrResult
 import com.chatbuddy.domain.repository.OcrRepository
 import com.chatbuddy.data.repository.CameraOcrAnalyzer
-import androidx.camera.core.ImageProxy
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,10 +23,21 @@ data class OcrUiState(
 @HiltViewModel
 class OcrViewModel @Inject constructor(
     private val repository: OcrRepository,
-    private val cameraAnalyzer: CameraOcrAnalyzer
+    val cameraAnalyzer: CameraOcrAnalyzer
 ) : ViewModel() {
     private val _state = MutableStateFlow(OcrUiState())
     val state: StateFlow<OcrUiState> = _state.asStateFlow()
+
+    init {
+        cameraAnalyzer.setCallbacks(
+            onResult = { result ->
+                _state.update { it.copy(result = result, processing = false, error = null) }
+            },
+            onError = { message ->
+                _state.update { it.copy(processing = false, error = message) }
+            }
+        )
+    }
 
     fun recognize(uri: String, languageTag: String = "en") {
         viewModelScope.launch {
@@ -40,10 +50,10 @@ class OcrViewModel @Inject constructor(
         }
     }
 
-    fun analyzeCameraFrame(imageProxy: ImageProxy) {
-        cameraAnalyzer.analyze(imageProxy) { result ->
-            _state.update { it.copy(result = result, processing = false, error = null) }
-        }
+    fun setCameraLanguage(languageTag: String) = cameraAnalyzer.setLanguageTag(languageTag)
+
+    fun setCameraError(message: String) {
+        _state.update { it.copy(processing = false, error = message) }
     }
 
     override fun onCleared() {
