@@ -24,6 +24,8 @@ const llama_vocab *g_vocab = nullptr;
 int32_t g_position = 0;
 int32_t g_generated = 0;
 int32_t g_maxGenerated = 0;
+std::vector<llama_token> g_cachedPromptTokens;
+int32_t g_lastCacheHitTokens = 0;
 bool g_backendInitialized = false;
 std::mutex g_mutex;
 
@@ -56,6 +58,8 @@ void freeRuntime() {
     g_position = 0;
     g_generated = 0;
     g_maxGenerated = 0;
+    g_cachedPromptTokens.clear();
+    g_lastCacheHitTokens = 0;
 }
 
 bool decodeTokens(const std::vector<llama_token> &tokens) {
@@ -84,6 +88,74 @@ bool decodeTokens(const std::vector<llama_token> &tokens) {
         }
         g_position += count;
     }
+    return true;
+}
+
+void clearMemoryAndPromptCache() {
+    llama_memory_clear(llama_get_memory(g_context), true);
+    g_position = 0;
+    g_cachedPromptTokens.clear();
+    g_lastCacheHitTokens = 0;
+}
+
+bool preparePrompt(const std::vector<llama_token> &tokens) {
+    llama_memory_t memory = llama_get_memory(g_context);
+    const size_t cachedSize = g_cachedPromptTokens.size();
+    const size_t commonSize = static_cast<size_t>(std::mismatch(
+        g_cachedPromptTokens.begin(),
+        g_cachedPromptTokens.end(),
+        tokens.begin(),
+        tokens.end()).first - g_cachedPromptTokens.begin());
+    bool cacheReusable = false;
+
+    if (cachedSize == 0) {
+        clearMemoryAndPromptCache();
+    } else {
+        const llama_pos maxPosition = llama_memory_seq_pos_max(memory, 0);
+        if (maxPosition < static_cast<llama_pos>(cachedSize - 1) ||
+            !llama_memory_seq_rm(memory, 0, static_cast<llama_pos>(cachedSize), -1) ||
+            (commonSize < cachedSize && !llama_memory_seq_rm(
+                memory, 0, static_cast<llama_pos>(commonSize), -1))) {
+            clearMemoryAndPromptCache();
+        } else {
+            cacheReusable = true;
+        }
+    }
+
+    const size_t reusableSize = cacheReusable ? commonSize : 0;
+    g_position = static_cast<int32_t>(reusableSize);
+    if (tokens.size() > reusableSize) {
+        std::vector<llama_token> suffix(
+            tokens.begin() + static_cast<std::vector<llama_token>::difference_type>(reusableSize),
+            tokens.end());
+        if (!decodeTokens(suffix)) {
+            clearMemoryAndPromptCache();
+            return false;
+        }
+    } else if (reusableSize > 0) {
+        // Removing generated tokens does not restore the context logits. Re-decode
+        // the last cached prompt token so sampling always starts from that prompt.
+        if (!llama_memory_seq_rm(
+                memory, 0, static_cast<llama_pos>(reusableSize - 1), -1)) {
+            clearMemoryAndPromptCache();
+            return false;
+        }
+        g_position = static_cast<int32_t>(reusableSize - 1);
+        const std::vector<llama_token> lastToken(1, tokens[reusableSize - 1]);
+        if (!decodeTokens(lastToken)) {
+            clearMemoryAndPromptCache();
+            return false;
+        }
+    }
+
+    g_cachedPromptTokens = tokens;
+    g_lastCacheHitTokens = static_cast<int32_t>(cachedSize == 0 ? 0 : commonSize);
+    __android_log_print(
+        ANDROID_LOG_DEBUG,
+        kLogTag,
+        "Prompt KV cache reused %d/%d tokens",
+        g_lastCacheHitTokens,
+        static_cast<int32_t>(tokens.size()));
     return true;
 }
 
@@ -241,9 +313,8 @@ Java_com_chatbuddy_ai_llm_LlamaNative_nativeStart(
     if (!tokenize(formatted, tokens) || tokens.empty() || tokens.size() >= kContextSize) {
         return 3;
     }
-    llama_memory_clear(llama_get_memory(g_context), true);
-    g_position = 0;
     g_generated = 0;
+    g_maxGenerated = 0;
     freeSampler();
     const auto chainParams = llama_sampler_chain_default_params();
     g_sampler = llama_sampler_chain_init(chainParams);
@@ -255,7 +326,8 @@ Java_com_chatbuddy_ai_llm_LlamaNative_nativeStart(
         std::clamp(topP, 0.05f, 1.0f), 1));
     llama_sampler_chain_add(g_sampler, llama_sampler_init_temp(std::max(temperature, 0.01f)));
     llama_sampler_chain_add(g_sampler, llama_sampler_init_dist(0xC0FFEEu));
-    if (!decodeTokens(tokens)) {
+    if (!preparePrompt(tokens)) {
+        freeSampler();
         return 5;
     }
     g_maxGenerated = std::clamp<int32_t>(
