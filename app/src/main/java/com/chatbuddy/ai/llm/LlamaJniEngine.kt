@@ -1,6 +1,9 @@
 package com.chatbuddy.ai.llm
 
 import android.os.ParcelFileDescriptor
+import androidx.documentfile.provider.DocumentFile
+import com.chatbuddy.data.download.CachedModelFile
+import com.chatbuddy.data.download.ModelRuntimeCache
 import com.chatbuddy.data.download.SafModelStore
 import com.chatbuddy.data.model.ModelManifestDataSource
 import com.chatbuddy.domain.model.AppResult
@@ -19,7 +22,8 @@ import javax.inject.Singleton
 @Singleton
 class LlamaJniEngine @Inject constructor(
     private val manifest: ModelManifestDataSource,
-    private val modelStore: SafModelStore
+    private val modelStore: SafModelStore,
+    private val runtimeCache: ModelRuntimeCache
 ) : LocalLlmEngine {
     private val mutex = Mutex()
     private var nativeReady = false
@@ -94,7 +98,15 @@ class LlamaJniEngine @Inject constructor(
             return AppResult.Error("Gemma model size does not match its manifest")
         }
         if (loadedModel != null) return AppResult.Success(Unit)
-        val descriptor = modelStore.openDescriptor(file)
+        val cache = when (val result = runtimeCache.prepare(artifact, file)) {
+            is AppResult.Success -> result.data
+            is AppResult.Error -> return AppResult.Error(
+                "Unable to prepare the local model cache",
+                result.cause
+            )
+            AppResult.Loading -> return AppResult.Error("Model cache is still preparing")
+        }
+        val descriptor = openDescriptor(cache, file)
             ?: return AppResult.Error("Unable to open Gemma model through SAF")
         val result = runCatching { LlamaNative.nativeLoad(descriptor.fd) }
             .getOrElse { error ->
@@ -107,6 +119,18 @@ class LlamaJniEngine @Inject constructor(
         }
         loadedModel = descriptor
         return AppResult.Success(Unit)
+    }
+
+    private fun openDescriptor(
+        cache: CachedModelFile?,
+        source: DocumentFile
+    ): ParcelFileDescriptor? {
+        val cachedDescriptor = cache?.file?.let { cachedFile ->
+            runCatching {
+                ParcelFileDescriptor.open(cachedFile, ParcelFileDescriptor.MODE_READ_ONLY)
+            }.getOrNull()
+        }
+        return cachedDescriptor ?: modelStore.openDescriptor(source)
     }
 
     private fun ensureNative(): Boolean {

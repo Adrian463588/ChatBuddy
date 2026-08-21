@@ -72,7 +72,7 @@ class ModelGateTest {
             }
         }
 
-        composeRule.onNodeWithText("Download scheduled").assertIsDisplayed()
+        composeRule.onNodeWithText("Download queued").assertIsDisplayed()
         composeRule.onNodeWithText("Pause download").performClick()
         composeRule.runOnIdle { assertEquals(1, pauseClicks) }
     }

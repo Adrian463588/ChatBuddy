@@ -4,6 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.OrtSession.SessionOptions
+import com.chatbuddy.data.download.ModelRuntimeCache
 import com.chatbuddy.data.download.ModelStateStore
 import com.chatbuddy.data.download.ResumableDownloadManager
 import com.chatbuddy.data.download.SafModelStore
@@ -14,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.nio.LongBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -22,7 +24,8 @@ import javax.inject.Singleton
 class OnDeviceEmbeddingRepository @Inject constructor(
     private val stateStore: ModelStateStore,
     private val safStore: SafModelStore,
-    private val downloadManager: ResumableDownloadManager
+    private val downloadManager: ResumableDownloadManager,
+    private val runtimeCache: ModelRuntimeCache
 ) : EmbeddingRepository {
     private val sessionMutex = Mutex()
     private val tokenizerMutex = Mutex()
@@ -81,7 +84,12 @@ class OnDeviceEmbeddingRepository @Inject constructor(
         val currentSession = session
         if (currentEnvironment != null && currentSession != null) return@withLock currentEnvironment to currentSession
         val file = safStore.finalFile(model) ?: return@withLock null
-        val bytes = safStore.openInput(file)?.use { it.readBytes() } ?: return@withLock null
+        val cached = runtimeCache.prepare(model, file)
+        val cachedFile = (cached as? AppResult.Success)?.data?.file
+        val bytes = withContext(Dispatchers.IO) {
+            cachedFile?.takeIf { it.isFile }?.readBytes()
+                ?: safStore.openInput(file)?.use { it.readBytes() }
+        } ?: return@withLock null
         val createdEnvironment = OrtEnvironment.getEnvironment()
         val options = SessionOptions()
         options.setIntraOpNumThreads(2)
@@ -96,7 +104,12 @@ class OnDeviceEmbeddingRepository @Inject constructor(
     private suspend fun ensureTokenizer(vocabArtifact: ModelArtifact): MiniLmWordPieceTokenizer = tokenizerMutex.withLock {
         tokenizer?.let { return@withLock it }
         val file = safStore.finalFile(vocabArtifact) ?: error("MiniLM vocabulary file is missing")
-        val created = safStore.openInput(file)?.use(MiniLmWordPieceTokenizer::fromVocab)
+        val cached = runtimeCache.prepare(vocabArtifact, file)
+        val cachedFile = (cached as? AppResult.Success)?.data?.file
+        val created = withContext(Dispatchers.IO) {
+            cachedFile?.takeIf { it.isFile }?.inputStream()?.use(MiniLmWordPieceTokenizer::fromVocab)
+                ?: safStore.openInput(file)?.use(MiniLmWordPieceTokenizer::fromVocab)
+        }
             ?: error("Unable to read MiniLM vocabulary file")
         tokenizer = created
         created
