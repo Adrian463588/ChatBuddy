@@ -8,9 +8,9 @@ The user selects a writable tree URI. ChatBuddy persists the grant and creates `
 
 Every downloadable artifact has a pinned URL/revision, byte size, SHA-256, license, ABI set, and `ModelStorageKind`. The broken Gemma 1B URL is excluded. The current mobile baseline is the official Gemma 4 E2B IT `Q4_0` artifact because it is the smallest verified Gemma 4 GGUF in the selected source.
 
-## ADR-003 — sqlite-vec is a hard boundary, not a silent fallback
+## ADR-003 — sqlite-vec is preferred with a real embedding compatibility path
 
-The repository targets the sqlite-vec virtual table contract and 384-dimensional vectors. Android SQLite does not automatically expose the extension, so the repository returns unavailable until a licensed, ABI-tested extension is packaged and registered. A cosine scan or fabricated retrieval result would violate the specification and is not substituted.
+The repository targets the sqlite-vec virtual table contract and 384-dimensional vectors. Android SQLite does not automatically expose the extension, so the repository attempts sqlite-vec first and stores the same real embeddings in a Room BLOB column when the extension is unavailable. The compatibility path ranks those vectors with exact cosine similarity and loads the winning chunk records; it never invents evidence. A future licensed, ABI-tested sqlite-vec extension remains the preferred backend.
 
 ## ADR-004 — llama.cpp JNI owns one serialized session
 
@@ -60,3 +60,20 @@ References:
 
 - https://developer.android.com/reference/androidx/work/CoroutineWorker
 - https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/manage-work
+
+## ADR-012 — web fallback is explicit, local-first, and provenance-bound
+
+ChatBuddy searches indexed local documents first. Only when RAG returns no
+evidence above the relevance threshold and the user has enabled the web toggle
+does the app send the question over HTTPS to `WebSearchRepository`. The initial
+keyless provider is the Wikipedia MediaWiki Action API. Documents, embeddings,
+persona instructions, and the local system prompt never cross this boundary.
+Web results are labelled untrusted reference data in the LLM prompt and are
+shown as source cards with provider, excerpt, and HTTPS URL. A failed web
+request or empty result withholds the answer instead of fabricating one.
+
+References:
+
+- https://mlanthology.org/neurips/2020/lewis2020neurips-retrievalaugmented/
+- https://developer.android.com/develop/connectivity/network-ops/connecting
+- https://www.mediawiki.org/wiki/API:Search/en

@@ -10,13 +10,13 @@
 
 ## 1. Overview
 
-ChatBuddy adalah aplikasi Android AI chatbot lokal berbasis Jetpack Compose yang sepenuhnya berjalan **offline** setelah setup awal. Aplikasi menggabungkan RAG (Retrieval-Augmented Generation) berbasis dokumen lokal, terjemahan realtime, OCR, dan penerjemahan gambar — tanpa mengirim data apapun ke server eksternal.
+ChatBuddy adalah aplikasi Android AI chatbot lokal berbasis Jetpack Compose yang berjalan **offline secara default** setelah setup awal. Aplikasi menggabungkan RAG (Retrieval-Augmented Generation) berbasis dokumen lokal, terjemahan realtime, OCR, dan penerjemahan gambar. Pencarian web hanya berjalan setelah pengguna mengaktifkan fallback secara eksplisit; dokumen, persona, dan prompt sistem tidak pernah dikirim ke server eksternal.
 
 ### 1.1 Masalah yang Diselesaikan
 
 | Masalah | Solusi ChatBuddy |
 |---------|-----------------|
-| Privasi data chatbot ke cloud | 100% on-device, zero telemetri |
+| Privasi data chatbot ke cloud | Local-first, zero telemetri, web fallback opt-in per pertanyaan |
 | LLM tidak memahami dokumen pribadi | RAG lokal dengan embedding ONNX |
 | Terjemahan realtime butuh internet | ML Kit offline translation |
 | OCR butuh koneksi/scan ke server | ML Kit offline text recognition |
@@ -209,7 +209,7 @@ Semua file besar (model AI, dokumen RAG) disimpan di folder SAF yang dipilih pen
 
 ### 3.3 Privacy & Security
 
-- Zero internet setelah setup
+- Zero internet setelah setup kecuali fallback web diaktifkan pengguna
 - Zero telemetri / analytics
 - Tidak ada API keys hardcoded
 - Dokumen tidak meninggalkan device
@@ -337,7 +337,7 @@ Persisten melewati proses kill, restart device, dan kehilangan koneksi. Exponent
 
 - [ ] ProGuard rules untuk ONNX Runtime, ML Kit, Apache PDFBox
 - [ ] NDK ABI filters: `arm64-v8a`, `armeabi-v7a`
-- [ ] Manifest: camera permission, SAF access, internet (download only)
+- [ ] Manifest: camera permission, SAF access, internet (download dan fallback web opt-in saja)
 - [ ] ModelGate composable: intercept navigasi jika model belum ada
 - [ ] Atomic file write: `.tmp` -> rename setelah download selesai
 - [ ] Test: resume download setelah kill proses
@@ -370,8 +370,10 @@ fail closed when a runtime dependency is unavailable.
   chunking, SAF download/resume/checksum/atomic rename, persona persistence,
   Compose ModelGate, CameraX OCR, ML Kit translation, ONNX embedding, a
   llama.cpp JNI build, and a pinned whisper.cpp JNI runtime. sqlite-vec
-  registration remains an explicit pending gate; the UI reports unavailable
-  rather than claiming completion.
+  registration is attempted first; Android builds without the extension use a
+  Room BLOB exact-cosine compatibility backend that stores and searches real
+  embeddings. This compatibility path is not fabricated data and remains
+  replaceable by the native sqlite-vec extension.
 - Acceptance status is evidence-based: Gradle, lint, native ABI, device
   install/launch, model download/resume, offline RAG, camera/gallery OCR,
   translation packs, voice, and uninstall persistence are separate gates.
@@ -392,3 +394,33 @@ from SAF when the OS clears the cache.
 - The Android v1 scope is one handset with turn-taking and automatic sentence
   breaks. Bluetooth multi-device simultaneous interpretation remains outside
   the PRD contract and is not represented as implemented.
+
+### 10.2 Local-first AI companion and web fallback amendment — 2026-08-25
+
+F-01 supports an explicit local-first companion flow. When document RAG is
+enabled, ChatBuddy embeds the question and searches the local vector store
+first. Relevant local evidence is the only context sent to the local LLM. If
+no evidence passes the relevance threshold and the user has enabled **Search
+web if local sources miss**, the app sends only the question over HTTPS to the
+configured `WebSearchRepository`. The initial keyless provider is the
+Wikipedia MediaWiki Action API; providers that require a secret stay behind a
+repository boundary and must not put a key in the APK or repository.
+
+- Web results are untrusted reference data, never instructions. The local LLM
+  is prompted to ignore commands contained in documents or web pages and to
+  withhold an answer when the returned evidence is insufficient.
+- Every web-backed answer displays the provider, excerpt, and HTTPS URL. A
+  source card opens the URL using the Android URI handler; local document
+  sources are shown separately from web sources.
+- If the local vector runtime is unavailable, the app reports the local RAG
+  failure instead of silently disguising it as a web answer. If web search is
+  unavailable or returns no grounded source, the app withholds the answer.
+- Disabling the web toggle guarantees no web request during chat. The local
+  LLM is still required for both local and web-grounded answers.
+
+The boundary follows the RAG provenance principle described in the original
+RAG paper and Android's repository/network guidance:
+
+- https://mlanthology.org/neurips/2020/lewis2020neurips-retrievalaugmented/
+- https://developer.android.com/develop/connectivity/network-ops/connecting
+- https://www.mediawiki.org/wiki/API:Search/en

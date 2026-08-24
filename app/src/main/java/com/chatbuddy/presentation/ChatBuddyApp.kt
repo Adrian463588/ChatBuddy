@@ -22,15 +22,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
@@ -43,6 +48,7 @@ import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -62,6 +68,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -75,6 +83,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -105,6 +114,8 @@ import com.chatbuddy.presentation.settings.PersonaViewModel
 import com.chatbuddy.presentation.rag.DocumentViewModel
 import com.chatbuddy.utils.formatBytes
 import com.chatbuddy.domain.model.ChatMessage
+import com.chatbuddy.domain.model.ChatCitation
+import com.chatbuddy.domain.model.ChatCitationKind
 import com.chatbuddy.domain.model.OcrResult
 import com.chatbuddy.domain.model.Persona
 import com.chatbuddy.domain.model.LiveTranslationPhase
@@ -244,41 +255,203 @@ private fun ChatContent(state: HomeUiState, homeViewModel: HomeViewModel) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Text("Local RAG chat", style = MaterialTheme.typography.headlineSmall)
-            Text("Model file is managed through SAF. The native llama.cpp runtime must be available before answers can be generated.")
+            ChatBentoHeader(chatState)
+        }
+        chatState.errorMessage?.let { message ->
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = MaterialTheme.shapes.large,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(message, modifier = Modifier.weight(1f))
+                        OutlinedButton(onClick = viewModel::clearError) {
+                            Text("Dismiss")
+                        }
+                    }
+                }
+            }
         }
         if (chatState.activePersona == null) {
             item {
-                Text(
-                    "Create and activate a persona in Settings before chatting.",
-                    color = MaterialTheme.colorScheme.error
-                )
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = MaterialTheme.shapes.large,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("Choose a persona to start", style = MaterialTheme.typography.titleMedium)
+                        Text("Activate one in Settings so ChatBuddy knows how to respond.")
+                        OutlinedButton(onClick = { homeViewModel.selectTab(HomeTab.SETTINGS) }) {
+                            Text("Open settings")
+                        }
+                    }
+                }
             }
+        }
+        item {
+            ChatKnowledgeBento(chatState, viewModel)
         }
         items(chatState.messages, key = { it.id }) { message -> ChatBubble(message) }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Use document evidence", modifier = Modifier.weight(1f))
-                Switch(checked = chatState.useRag, onCheckedChange = viewModel::setUseRag)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = chatState.input,
+                            onValueChange = viewModel::setInput,
+                            label = { Text("Ask ChatBuddy") },
+                            modifier = Modifier.weight(1f),
+                            minLines = 1,
+                            maxLines = 5
+                        )
+                        IconButton(
+                            onClick = viewModel::send,
+                            enabled = !chatState.streaming && chatState.input.isNotBlank(),
+                            modifier = Modifier.semantics {
+                                contentDescription = "Send message"
+                            }
+                        ) {
+                            Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null)
+                        }
+                    }
+                    when {
+                        chatState.webSearching -> {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Text(
+                                "Searching Wikipedia for a grounded source…",
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.semantics {
+                                    liveRegion = LiveRegionMode.Polite
+                                }
+                            )
+                        }
+                        chatState.streaming -> Text(
+                            "ChatBuddy is responding…",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.semantics {
+                                liveRegion = LiveRegionMode.Polite
+                            }
+                        )
+                    }
+                }
             }
         }
-        item {
-            OutlinedTextField(
-                value = chatState.input,
-                onValueChange = viewModel::setInput,
-                label = { Text("Message") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 2,
-                maxLines = 5
-            )
-        }
-        item {
-            Button(
-                onClick = viewModel::send,
-                enabled = !chatState.streaming && chatState.input.isNotBlank(),
-                modifier = Modifier.fillMaxWidth()
+    }
+}
+
+@Composable
+private fun ChatBentoHeader(state: com.chatbuddy.presentation.chat.ChatUiState) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(Icons.AutoMirrored.Outlined.Chat, contentDescription = null)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("AI companion", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    state.activePersona?.name ?: "Persona required",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                shape = MaterialTheme.shapes.small
             ) {
-                Text(if (chatState.streaming) "Generating" else "Send message")
+                Text(
+                    if (state.allowWebFallback) "Local + web" else "Local-first",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatKnowledgeBento(
+    state: com.chatbuddy.presentation.chat.ChatUiState,
+    viewModel: ChatViewModel
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Knowledge", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Local documents are checked first. Web search is optional.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Outlined.Description, contentDescription = null)
+                Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Text("Use local documents")
+                    Text(
+                        "Answer from indexed RAG sources",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+                Switch(
+                    checked = state.useRag,
+                    onCheckedChange = viewModel::setUseRag,
+                    modifier = Modifier.semantics {
+                        contentDescription = "Use local document evidence"
+                    }
+                )
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Outlined.Public, contentDescription = null)
+                Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Text("Search web if local sources miss")
+                    Text(
+                        "Only the question is sent over HTTPS",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+                Switch(
+                    checked = state.allowWebFallback,
+                    onCheckedChange = viewModel::setAllowWebFallback,
+                    modifier = Modifier.semantics {
+                        contentDescription = "Allow web search fallback"
+                    }
+                )
             }
         }
     }
@@ -286,10 +459,86 @@ private fun ChatContent(state: HomeUiState, homeViewModel: HomeViewModel) {
 
 @Composable
 private fun ChatBubble(message: ChatMessage) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(if (message.role == ChatMessage.Role.USER) "You" else "ChatBuddy", style = MaterialTheme.typography.labelLarge)
-            Text(message.text)
+    val userMessage = message.role == ChatMessage.Role.USER
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (userMessage) Alignment.End else Alignment.Start
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().widthIn(max = 540.dp),
+            color = if (userMessage) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
+            shape = MaterialTheme.shapes.large
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    if (userMessage) "You" else "ChatBuddy",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                SelectionContainer { Text(message.text) }
+                if (!userMessage && message.citations.isNotEmpty()) {
+                    ChatSources(message.citations)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatSources(citations: List<ChatCitation>) {
+    val uriHandler = LocalUriHandler.current
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
+        Text("Sources", style = MaterialTheme.typography.labelLarge)
+        citations.forEach { citation ->
+            val uri = citation.uri
+            val sourceModifier = if (citation.kind == ChatCitationKind.WEB && uri != null) {
+                Modifier.clickable { runCatching { uriHandler.openUri(uri) } }
+            } else {
+                Modifier
+            }
+            Surface(
+                modifier = sourceModifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        if (citation.kind == ChatCitationKind.WEB) {
+                            Icons.Outlined.Public
+                        } else {
+                            Icons.Outlined.Description
+                        },
+                        contentDescription = null
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(citation.title, style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            "${citation.provider}${citation.score?.let { " · %.2f".format(it) } ?: ""}",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                        Text(
+                            citation.excerpt,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (citation.kind == ChatCitationKind.WEB && uri != null) {
+                        Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = "Open source")
+                    }
+                }
+            }
         }
     }
 }

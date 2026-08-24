@@ -218,14 +218,15 @@ val tweenUtility = tween<Float>(
 **Layout:**
 ```
 [ TopAppBar: "ChatBuddy" | persona name chip | settings icon ]
+[ Bento header: "AI companion" | Local-first / Local + web status ]
+[ Bento knowledge card: local documents toggle | opt-in web fallback toggle ]
 [ LazyColumn — message list ]
   [ AI bubble — left aligned, Surface Variant bg ]
   [ User bubble — right aligned, Primary container bg ]
-  [ Source citations — collapsible chips below AI bubble ]
+  [ Source cards — local document and web provenance separated below AI bubble ]
   [ Typing indicator — 3 dot spring animation ]
-[ Sticky Bottom ]
-  [ RAG toggle chip | Document count badge ]
-  [ TextField + Send FAB ]
+[ Composer bento card ]
+  [ TextField + Send icon button ]
 ```
 
 **Warna bubble:**
@@ -233,6 +234,21 @@ val tweenUtility = tween<Float>(
 - User: Primary Container background, On-Primary-Container text
 
 **Streaming:** Tampilkan teks secara bertahap (append per token). Cursor blink di akhir.
+
+**AI companion boundary:** Local documents are always preferred when RAG is
+enabled. The web fallback is an explicit switch, not a hidden automatic
+request. Its label states that only the question crosses the HTTPS boundary.
+Web source cards use the public-source icon, show provider and excerpt, and
+open the HTTPS URL when activated. No decorative chips, fake counts, or
+generic toast-only actions are used.
+
+**Bento and responsive rules:** The header, knowledge controls, and composer
+are separate surface-container cards with one clear task each. They keep the
+existing 8 dp grid and 48 dp touch targets, use a 600 dp content maximum, and
+collapse to one column at compact width. At medium and expanded widths the
+cards remain single-column inside the centered reading measure so the message
+line length stays comfortable. Large font scale must wrap labels without
+clipping or horizontal scrolling.
 
 ---
 

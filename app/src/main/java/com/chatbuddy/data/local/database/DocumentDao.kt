@@ -23,6 +23,22 @@ interface DocumentDao {
     @Query("SELECT * FROM document_chunks WHERE id IN (:ids)")
     suspend fun findChunks(ids: List<Long>): List<DocumentChunkEntity>
 
+    @Query("UPDATE document_chunks SET embedding = :embedding WHERE id = :id")
+    suspend fun updateEmbedding(id: Long, embedding: ByteArray)
+
+    @Query(
+        """
+        SELECT c.*, d.displayName AS documentName
+        FROM document_chunks AS c
+        INNER JOIN documents AS d ON d.id = c.documentId
+        WHERE c.id IN (:ids)
+        """
+    )
+    suspend fun findChunksWithDocuments(ids: List<Long>): List<DocumentChunkWithDocument>
+
+    @Query("SELECT id, documentId, ordinal, embedding FROM document_chunks WHERE embedding IS NOT NULL")
+    suspend fun findEmbeddedVectors(): List<DocumentVectorRow>
+
     @Query("DELETE FROM documents WHERE id = :documentId")
     suspend fun deleteDocument(documentId: String)
 

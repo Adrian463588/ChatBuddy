@@ -22,7 +22,9 @@ import com.chatbuddy.domain.repository.VoiceRepository
 import com.chatbuddy.ai.voice.WhisperJniEngine
 import com.chatbuddy.ai.voice.WhisperEngine
 import com.chatbuddy.data.repository.LocalRagChatRepository
+import com.chatbuddy.data.repository.MediaWikiWebSearchRepository
 import com.chatbuddy.domain.repository.ChatRepository
+import com.chatbuddy.domain.repository.WebSearchRepository
 import com.chatbuddy.ai.llm.LocalLlmEngine
 import com.chatbuddy.ai.llm.LlamaJniEngine
 import androidx.room.Room
@@ -81,6 +83,10 @@ abstract class AppBindings {
 
     @Binds
     @Singleton
+    abstract fun bindWebSearchRepository(impl: MediaWikiWebSearchRepository): WebSearchRepository
+
+    @Binds
+    @Singleton
     abstract fun bindLocalLlmEngine(impl: LlamaJniEngine): LocalLlmEngine
 }
 
@@ -90,14 +96,16 @@ object AppProviders {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase =
-        Room.databaseBuilder(context, AppDatabase::class.java, "chatbuddy.db").build()
+        Room.databaseBuilder(context, AppDatabase::class.java, "chatbuddy.db")
+            .addMigrations(AppDatabase.MIGRATION_1_2)
+            .build()
 
     @Provides
     @Singleton
     fun provideOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(0, TimeUnit.MILLISECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
         .build()
 
     @Provides

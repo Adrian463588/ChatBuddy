@@ -24,7 +24,10 @@ data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val input: String = "",
     val useRag: Boolean = true,
+    val allowWebFallback: Boolean = false,
     val streaming: Boolean = false,
+    val webSearching: Boolean = false,
+    val errorMessage: String? = null,
     val activePersona: Persona? = null
 )
 
@@ -48,6 +51,8 @@ class ChatViewModel @Inject constructor(
 
     fun setInput(value: String) = _state.update { it.copy(input = value) }
     fun setUseRag(enabled: Boolean) = _state.update { it.copy(useRag = enabled) }
+    fun setAllowWebFallback(enabled: Boolean) = _state.update { it.copy(allowWebFallback = enabled) }
+    fun clearError() = _state.update { it.copy(errorMessage = null) }
 
     fun send() {
         val current = _state.value
@@ -56,7 +61,9 @@ class ChatViewModel @Inject constructor(
         when {
             text.isEmpty() -> return
             persona == null -> {
-                viewModelScope.launch { _events.emit("Create and activate a persona before chatting") }
+                val message = "Create and activate a persona before chatting"
+                _state.update { it.copy(errorMessage = message) }
+                viewModelScope.launch { _events.emit(message) }
                 return
             }
             current.streaming -> return
@@ -65,23 +72,41 @@ class ChatViewModel @Inject constructor(
             it.copy(
                 input = "",
                 streaming = true,
+                webSearching = false,
+                errorMessage = null,
                 messages = it.messages + ChatMessage(UUID.randomUUID().toString(), ChatMessage.Role.USER, text)
             )
         }
         viewModelScope.launch {
-            chatRepository.stream(ChatRequest(text, persona, current.useRag)).collect { event ->
+            chatRepository.stream(
+                ChatRequest(
+                    text = text,
+                    persona = persona,
+                    useRag = current.useRag,
+                    allowWebFallback = current.allowWebFallback
+                )
+            ).collect { event ->
                 when (event) {
                     ChatStreamEvent.Started -> Unit
-                    is ChatStreamEvent.EvidenceFound -> Unit
+                    ChatStreamEvent.WebSearchStarted -> _state.update { it.copy(webSearching = true) }
+                    is ChatStreamEvent.SourcesFound -> _state.update {
+                        it.copy(webSearching = false)
+                    }
                     is ChatStreamEvent.Token -> appendAssistant(event.value)
-                    is ChatStreamEvent.Completed -> _state.update { it.copy(messages = it.messages + event.message) }
+                    is ChatStreamEvent.Completed -> completeAssistant(event.message)
                     is ChatStreamEvent.Failed -> {
-                        _state.update { it.copy(streaming = false) }
+                        _state.update {
+                            it.copy(
+                                streaming = false,
+                                webSearching = false,
+                                errorMessage = event.message
+                            )
+                        }
                         _events.emit(event.message)
                     }
                 }
             }
-            _state.update { it.copy(streaming = false) }
+            _state.update { it.copy(streaming = false, webSearching = false) }
         }
     }
 
@@ -91,6 +116,15 @@ class ChatViewModel @Inject constructor(
             current.copy(messages = current.messages.dropLast(1) + last.copy(text = last.text + token))
         } else {
             current.copy(messages = current.messages + ChatMessage(UUID.randomUUID().toString(), ChatMessage.Role.ASSISTANT, token))
+        }
+    }
+
+    private fun completeAssistant(message: ChatMessage) = _state.update { current ->
+        val last = current.messages.lastOrNull()
+        if (last?.role == ChatMessage.Role.ASSISTANT) {
+            current.copy(messages = current.messages.dropLast(1) + message)
+        } else {
+            current.copy(messages = current.messages + message)
         }
     }
 }

@@ -1,6 +1,8 @@
 package com.chatbuddy.data.local.database
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
+import androidx.room.Embedded
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "documents")
@@ -21,5 +23,19 @@ data class DocumentChunkEntity(
     val ordinal: Int,
     val text: String,
     val startToken: Int,
-    val endTokenExclusive: Int
+    val endTokenExclusive: Int,
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB)
+    val embedding: ByteArray? = null
+)
+
+data class DocumentChunkWithDocument(
+    @Embedded val chunk: DocumentChunkEntity,
+    @ColumnInfo(name = "documentName") val documentName: String
+)
+
+data class DocumentVectorRow(
+    @ColumnInfo(name = "id") val id: Long,
+    @ColumnInfo(name = "documentId") val documentId: String,
+    @ColumnInfo(name = "ordinal") val ordinal: Int,
+    @ColumnInfo(name = "embedding") val embedding: ByteArray
 )

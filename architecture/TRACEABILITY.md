@@ -4,7 +4,8 @@ Traceability ini menghubungkan PRD/AGENTS dengan implementasi nyata dan evidence
 
 | ID | Requirement | Implementation | Status/evidence |
 | --- | --- | --- | --- |
-| F-01 | Chat local RAG dari folder SAF dengan referensi dokumen | `DocumentRepositoryImpl`, `ChunkDocumentUseCase`, `OnDeviceEmbeddingRepository`, `SqliteVecVectorStoreRepository`, `LocalRagChatRepository` | TXT/embedding/abstain path implemented; sqlite-vec extension dan end-to-end retrieval pending |
+| F-01 | Chat local RAG dari folder SAF dengan referensi dokumen | `DocumentRepositoryImpl`, `ChunkDocumentUseCase`, `OnDeviceEmbeddingRepository`, `SqliteVecVectorStoreRepository`, `LocalRagChatRepository` | Local evidence, source binding, abstain, sqlite-vec attempt, and Room exact-cosine compatibility path implemented; real model/device retrieval remains a separate gate |
+| F-01-web | AI companion web fallback ketika local evidence miss | `WebSearchRepository`, `MediaWikiWebSearchRepository`, `LocalRagChatRepository`, `ChatViewModel`, bento source cards | Explicit opt-in, HTTPS-only Wikipedia search, untrusted-content prompt boundary, URL provenance, and answer withholding tests implemented |
 | F-02 | Realtime text translation | `TranslationViewModel`, `MlKitTranslationRepository`, 300 ms debounce | Implemented against ML Kit managed packs; offline provider fallback pending |
 | F-03 | OCR dokumen, image, kamera | `MlKitOcrRepository`, `CameraOcrAnalyzer`, `CameraPreview`, `OcrViewModel` | Implemented against bundled ML Kit recognizers; camera/gallery device gate pending |
 | F-04 | Persona dengan system prompt | `PersonaEntity`, `PersonaRepositoryImpl`, `ValidatePersonaUseCase`, `PersonaViewModel` | Implemented and persisted in Room; unit validation present |
