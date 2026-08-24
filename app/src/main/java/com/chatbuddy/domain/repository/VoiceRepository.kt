@@ -7,6 +7,6 @@ import kotlinx.coroutines.flow.Flow
 
 interface VoiceRepository {
     suspend fun capabilities(languageTag: String): AppResult<VoiceCapabilities>
-    fun transcribe(): Flow<VoiceTranscript>
+    fun transcribe(languageTag: String): Flow<VoiceTranscript>
     suspend fun speak(text: String, languageTag: String): AppResult<Unit>
 }

@@ -2,13 +2,18 @@ package com.chatbuddy.presentation.translate
 
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.LanguageOption
+import com.chatbuddy.domain.model.LiveTranslationPhase
 import com.chatbuddy.domain.model.TranslationModelStatus
 import com.chatbuddy.domain.model.TranslationProviderKind
 import com.chatbuddy.domain.model.TranslationRequest
 import com.chatbuddy.domain.model.TranslationResult
+import com.chatbuddy.domain.model.VoiceCapabilities
+import com.chatbuddy.domain.model.VoiceTranscript
 import com.chatbuddy.domain.repository.TranslationRepository
+import com.chatbuddy.domain.repository.VoiceRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -16,6 +21,8 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -33,7 +40,7 @@ class TranslationViewModelTest {
     fun translationWaitsForTheOfflineModelAndUsesDebounce() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val repository = RecordingTranslationRepository(modelReady = true)
-        val viewModel = TranslationViewModel(repository)
+        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository())
         advanceUntilIdle()
 
         viewModel.setSourceText("hello")
@@ -51,7 +58,7 @@ class TranslationViewModelTest {
     fun downloadActionMakesTheManagedModelAvailable() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val repository = RecordingTranslationRepository(modelReady = false)
-        val viewModel = TranslationViewModel(repository)
+        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository())
         advanceUntilIdle()
 
         assertFalse(viewModel.state.value.modelReady)
@@ -61,6 +68,22 @@ class TranslationViewModelTest {
         assertEquals(1, repository.downloadCalls)
         assertTrue(viewModel.state.value.modelReady)
         assertFalse(viewModel.state.value.modelDownloading)
+    }
+
+    @Test
+    fun liveConversationTranslatesFinalWhisperTurnAndReturnsToListening() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val repository = RecordingTranslationRepository(modelReady = true)
+        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository())
+        advanceUntilIdle()
+
+        viewModel.toggleLiveTranslation()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.liveEnabled)
+        assertEquals("translated: hello", viewModel.state.value.liveTranslation?.text)
+        assertEquals("hello", viewModel.state.value.liveTranscript)
+        assertEquals(LiveTranslationPhase.Listening, viewModel.state.value.livePhase)
     }
 
     private class RecordingTranslationRepository(
@@ -101,5 +124,25 @@ class TranslationViewModelTest {
                 )
             )
         }
+    }
+
+    private class RecordingVoiceRepository : VoiceRepository {
+        override suspend fun capabilities(languageTag: String): AppResult<VoiceCapabilities> =
+            AppResult.Success(
+                VoiceCapabilities(
+                    whisperReady = true,
+                    offlineTtsReady = true,
+                    message = "Voice turn-taking is ready"
+                )
+            )
+
+        override fun transcribe(languageTag: String): Flow<VoiceTranscript> = flow {
+            emit(VoiceTranscript.Partial("hello"))
+            emit(VoiceTranscript.Final("hello"))
+            awaitCancellation()
+        }
+
+        override suspend fun speak(text: String, languageTag: String): AppResult<Unit> =
+            AppResult.Success(Unit)
     }
 }

@@ -36,6 +36,10 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.SwapHoriz
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material.icons.outlined.VolumeOff
+import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
@@ -103,6 +107,7 @@ import com.chatbuddy.utils.formatBytes
 import com.chatbuddy.domain.model.ChatMessage
 import com.chatbuddy.domain.model.OcrResult
 import com.chatbuddy.domain.model.Persona
+import com.chatbuddy.domain.model.LiveTranslationPhase
 import java.util.UUID
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.core.content.ContextCompat
@@ -293,6 +298,16 @@ private fun ChatBubble(message: ChatMessage) {
 private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
     val viewModel = hiltViewModel<TranslationViewModel>()
     val translationState by viewModel.state.collectAsStateWithLifecycleCompat()
+    val context = LocalContext.current
+    var microphonePermissionGranted by rememberSaveable {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val microphonePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> microphonePermissionGranted = granted }
     LaunchedEffect(state.pendingTranslationText) {
         state.pendingTranslationText?.let {
             viewModel.setSourceText(it)
@@ -310,11 +325,19 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
             minLines = 4,
             maxLines = 8
         )
+        LiveTranslationCard(
+            state = translationState,
+            viewModel = viewModel,
+            microphonePermissionGranted = microphonePermissionGranted,
+            onRequestMicrophone = { microphonePermission.launch(Manifest.permission.RECORD_AUDIO) },
+            onOpenModelSetup = { homeViewModel.selectTab(HomeTab.SETTINGS) }
+        )
         if (translationState.loading || translationState.result != null || translationState.error != null) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     translationState.result?.let { result ->
+                        SelectionContainer { Text(result.text, style = MaterialTheme.typography.bodyLarge) }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
@@ -338,6 +361,146 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
         }
     }
 }
+
+@Composable
+private fun LiveTranslationCard(
+    state: TranslationUiState,
+    viewModel: TranslationViewModel,
+    microphonePermissionGranted: Boolean,
+    onRequestMicrophone: () -> Unit,
+    onOpenModelSetup: () -> Unit
+) {
+    val active = state.liveEnabled
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite }
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Live conversation", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "One phone · pause between turns",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Icon(
+                    imageVector = if (active) Icons.Outlined.Mic else Icons.Outlined.VolumeUp,
+                    contentDescription = if (active) "Microphone active" else "Voice conversation"
+                )
+            }
+            Text(
+                livePhaseLabel(state.livePhase),
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+            )
+            if (!microphonePermissionGranted && !active) {
+                Text(
+                    "Microphone access is required for live conversation.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (state.liveChecking) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Button(
+                onClick = {
+                    if (active) {
+                        viewModel.stopLiveTranslation()
+                    } else if (!microphonePermissionGranted) {
+                        onRequestMicrophone()
+                    } else {
+                        viewModel.toggleLiveTranslation()
+                    }
+                },
+                enabled = !state.liveChecking,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = if (active) Icons.Outlined.Stop else Icons.Outlined.Mic,
+                    contentDescription = null
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(if (active) "Stop live translation" else "Start live translation")
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (state.voiceCapabilities?.offlineTtsReady == true) {
+                        Icons.Outlined.VolumeUp
+                    } else {
+                        Icons.Outlined.VolumeOff
+                    },
+                    contentDescription = null
+                )
+                Text(
+                    "Speak translation",
+                    modifier = Modifier.weight(1f).padding(start = 8.dp)
+                )
+                Switch(
+                    checked = state.liveSpeakTranslation &&
+                        state.voiceCapabilities?.offlineTtsReady == true,
+                    onCheckedChange = viewModel::setLiveSpeakTranslation,
+                    enabled = state.voiceCapabilities?.offlineTtsReady == true
+                )
+            }
+            if (state.liveTranscript.isNotBlank()) {
+                VoiceTurnText(label = "You said", text = state.liveTranscript)
+            }
+            state.liveTranslation?.let { translation ->
+                VoiceTurnText(label = "Translation", text = translation.text)
+                Text(
+                    "${providerLabel(translation.provider)} · ${translation.targetLanguage}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            state.liveError?.let { message ->
+                Text(message, color = MaterialTheme.colorScheme.error)
+                if (state.voiceCapabilities?.whisperReady == false) {
+                    OutlinedButton(onClick = onOpenModelSetup, modifier = Modifier.fillMaxWidth()) {
+                        Text("Open model setup")
+                    }
+                }
+            }
+            state.voiceCapabilities?.takeIf { !it.offlineTtsReady }?.let {
+                Text(
+                    "Offline voice output is unavailable for this language; text translation remains available.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceTurnText(label: String, text: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium)
+        SelectionContainer {
+            Text(
+                text,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+            )
+        }
+    }
+}
+
+private fun livePhaseLabel(phase: LiveTranslationPhase): String = when (phase) {
+    LiveTranslationPhase.Idle -> "Ready for a live conversation"
+    LiveTranslationPhase.Starting -> "Preparing on-device voice"
+    LiveTranslationPhase.Listening -> "Listening for the next sentence"
+    LiveTranslationPhase.Transcribing -> "Transcribing on device"
+    LiveTranslationPhase.Translating -> "Translating on device"
+    LiveTranslationPhase.Speaking -> "Playing the translation"
+    LiveTranslationPhase.Error -> "Live translation stopped"
+}
+
 
 @Composable
 private fun TranslationModelCard(

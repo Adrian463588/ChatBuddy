@@ -11,3 +11,13 @@ data class VoiceCapabilities(
     val offlineTtsReady: Boolean,
     val message: String
 )
+
+enum class LiveTranslationPhase {
+    Idle,
+    Starting,
+    Listening,
+    Transcribing,
+    Translating,
+    Speaking,
+    Error
+}

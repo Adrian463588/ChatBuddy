@@ -19,7 +19,7 @@ import com.chatbuddy.data.repository.PersonaRepositoryImpl
 import com.chatbuddy.domain.repository.PersonaRepository
 import com.chatbuddy.data.repository.AndroidVoiceRepository
 import com.chatbuddy.domain.repository.VoiceRepository
-import com.chatbuddy.ai.voice.UnavailableWhisperEngine
+import com.chatbuddy.ai.voice.WhisperJniEngine
 import com.chatbuddy.ai.voice.WhisperEngine
 import com.chatbuddy.data.repository.LocalRagChatRepository
 import com.chatbuddy.domain.repository.ChatRepository
@@ -73,7 +73,7 @@ abstract class AppBindings {
 
     @Binds
     @Singleton
-    abstract fun bindWhisperEngine(impl: UnavailableWhisperEngine): WhisperEngine
+    abstract fun bindWhisperEngine(impl: WhisperJniEngine): WhisperEngine
 
     @Binds
     @Singleton

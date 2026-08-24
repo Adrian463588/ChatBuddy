@@ -368,9 +368,27 @@ fail closed when a runtime dependency is unavailable.
   are not represented as SAF-persistent files after uninstall.
 - The current implementation provides real bounded TXT/PDF/DOCX streaming ingestion,
   chunking, SAF download/resume/checksum/atomic rename, persona persistence,
-  Compose ModelGate, CameraX OCR, ML Kit translation, ONNX embedding, and a
-  llama.cpp JNI build. sqlite-vec registration remains an explicit pending
-  gate; the UI reports unavailable rather than claiming completion.
+  Compose ModelGate, CameraX OCR, ML Kit translation, ONNX embedding, a
+  llama.cpp JNI build, and a pinned whisper.cpp JNI runtime. sqlite-vec
+  registration remains an explicit pending gate; the UI reports unavailable
+  rather than claiming completion.
 - Acceptance status is evidence-based: Gradle, lint, native ABI, device
   install/launch, model download/resume, offline RAG, camera/gallery OCR,
   translation packs, voice, and uninstall persistence are separate gates.
+
+### 10.1 Live translation implementation amendment — 2026-08-24
+
+F-02 now includes a real one-device live conversation mode. The pipeline is
+`AudioRecord (16 kHz) -> frame VAD/sentence boundary -> pinned whisper.cpp
+Whisper Base Q5_1 -> ML Kit offline translation -> offline Android TTS`. SAF
+remains the durable source of the Whisper model; the verified file is
+materialized into `cacheDir` only for native file-path loading and is rebuilt
+from SAF when the OS clears the cache.
+
+- Partial Whisper snapshots update the live transcript while the user is
+  speaking; final utterances trigger translation and optional TTS.
+- The UI exposes real `Listening`, `Transcribing`, `Translating`, `Speaking`,
+  and `Error` states with retry/model setup paths.
+- The Android v1 scope is one handset with turn-taking and automatic sentence
+  breaks. Bluetooth multi-device simultaneous interpretation remains outside
+  the PRD contract and is not represented as implemented.

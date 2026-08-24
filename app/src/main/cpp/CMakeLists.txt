@@ -36,6 +36,17 @@ set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(llama_cpp)
 
+# Whisper is fetched at a pinned revision and compiled into the same Android
+# native build. The model itself remains app-owned in SAF; this is only the
+# runtime implementation used after the user installs the Whisper artifact.
+FetchContent_Declare(
+    whisper_cpp
+    GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
+    GIT_TAG 52dec9d889cc8e5f0a1978f2eb37a96978a131be
+    GIT_SHALLOW TRUE
+)
+FetchContent_Populate(whisper_cpp)
+
 add_library(chatbuddy_llama SHARED chatbuddy_llama.cpp)
 find_library(log-lib log)
 
@@ -50,3 +61,28 @@ target_compile_options(chatbuddy_llama PRIVATE
 )
 
 target_link_libraries(chatbuddy_llama PRIVATE llama ${log-lib})
+
+add_library(chatbuddy_whisper SHARED
+    ${whisper_cpp_SOURCE_DIR}/src/whisper.cpp
+    chatbuddy_whisper.cpp
+)
+
+target_include_directories(chatbuddy_whisper PRIVATE
+    ${whisper_cpp_SOURCE_DIR}/include
+    ${llama_cpp_SOURCE_DIR}/ggml/include
+    ${llama_cpp_SOURCE_DIR}/ggml/src
+    ${llama_cpp_SOURCE_DIR}/ggml/src/ggml-cpu
+)
+
+target_compile_definitions(chatbuddy_whisper PRIVATE
+    GGML_USE_CPU
+    WHISPER_VERSION="1.9.3-dev"
+)
+
+target_compile_options(chatbuddy_whisper PRIVATE
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+)
+
+target_link_libraries(chatbuddy_whisper PRIVATE llama ${log-lib} android)

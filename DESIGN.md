@@ -256,6 +256,27 @@ val tweenUtility = tween<Float>(
 
 **Animasi:** Terjemahan muncul dengan fade-in (tidak langsung pop-in).
 
+**Live conversation extension:**
+
+```
+[ Live conversation card ]
+  [ Listening / Transcribing / Translating / Speaking ]
+  [ Start live translation | Stop live translation ]
+  [ Speak translation toggle ]
+  [ You said — live transcript ]
+  [ Translation — selected provider ]
+```
+
+- Live mode memakai satu perangkat Android dan microphone permission yang jelas.
+- State wajib berasal dari pipeline nyata: `Starting`, `Listening`, `Transcribing`,
+  `Translating`, `Speaking`, atau `Error`; tidak ada animasi seolah-olah sedang
+  mendengar ketika capture belum berjalan.
+- Satu scroll owner tetap dipakai pada screen. Live card tidak menambahkan chip
+  atau badge dekoratif; status ditampilkan sebagai satu label yang dapat dibaca
+  TalkBack.
+- Teks partial dan final tetap selectable. Hasil final baru diputar TTS setelah
+  sentence boundary terdeteksi, sehingga suara tidak terpotong setiap frame.
+
 ---
 
 ### 8.3 OCR Screen
