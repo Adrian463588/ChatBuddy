@@ -11,8 +11,10 @@ import com.chatbuddy.domain.model.VoiceCapabilities
 import com.chatbuddy.domain.model.VoiceTranscript
 import com.chatbuddy.domain.repository.TranslationRepository
 import com.chatbuddy.domain.repository.VoiceRepository
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -21,6 +23,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import org.junit.After
@@ -86,6 +89,48 @@ class TranslationViewModelTest {
         assertEquals(LiveTranslationPhase.Listening, viewModel.state.value.livePhase)
     }
 
+    @Test
+    fun cancelledLiveTurnCannotOverwriteTheNextSession() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val releaseFirstTurn = CompletableDeferred<Unit>()
+        val repository = DelayedTranslationRepository(releaseFirstTurn)
+        val viewModel = TranslationViewModel(repository, SequencedVoiceRepository())
+        advanceUntilIdle()
+
+        viewModel.toggleLiveTranslation()
+        runCurrent()
+        assertEquals(1, repository.translateCalls)
+
+        viewModel.stopLiveTranslation()
+        viewModel.toggleLiveTranslation()
+        advanceUntilIdle()
+
+        assertEquals("translated: new", viewModel.state.value.liveTranslation?.text)
+
+        releaseFirstTurn.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("translated: new", viewModel.state.value.liveTranslation?.text)
+        assertEquals(LiveTranslationPhase.Listening, viewModel.state.value.livePhase)
+    }
+
+    @Test
+    fun voiceFailureIsShownAndDoesNotLeaveLiveSessionActive() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val viewModel = TranslationViewModel(
+            RecordingTranslationRepository(modelReady = true),
+            FailingVoiceRepository()
+        )
+        advanceUntilIdle()
+
+        viewModel.toggleLiveTranslation()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value.liveEnabled)
+        assertEquals(LiveTranslationPhase.Error, viewModel.state.value.livePhase)
+        assertEquals("Microphone capture stopped unexpectedly", viewModel.state.value.liveError)
+    }
+
     private class RecordingTranslationRepository(
         private var modelReady: Boolean
     ) : TranslationRepository {
@@ -140,6 +185,84 @@ class TranslationViewModelTest {
             emit(VoiceTranscript.Partial("hello"))
             emit(VoiceTranscript.Final("hello"))
             awaitCancellation()
+        }
+
+        override suspend fun speak(text: String, languageTag: String): AppResult<Unit> =
+            AppResult.Success(Unit)
+    }
+
+    private class DelayedTranslationRepository(
+        private val releaseFirstTurn: CompletableDeferred<Unit>
+    ) : TranslationRepository {
+        var translateCalls = 0
+
+        override suspend fun availableLanguages(): AppResult<List<LanguageOption>> =
+            AppResult.Success(
+                listOf(
+                    LanguageOption("en", "English"),
+                    LanguageOption("id", "Indonesian")
+                )
+            )
+
+        override suspend fun modelStatus(
+            sourceLanguage: String,
+            targetLanguage: String
+        ): AppResult<TranslationModelStatus> =
+            AppResult.Success(TranslationModelStatus(sourceLanguage, targetLanguage, ready = true))
+
+        override suspend fun downloadModels(sourceLanguage: String, targetLanguage: String): AppResult<Unit> =
+            AppResult.Success(Unit)
+
+        override suspend fun translate(request: TranslationRequest): AppResult<TranslationResult> {
+            translateCalls += 1
+            if (request.text == "old") {
+                withContext(NonCancellable) { releaseFirstTurn.await() }
+            }
+            return AppResult.Success(
+                TranslationResult(
+                    text = "translated: ${request.text}",
+                    provider = TranslationProviderKind.ML_KIT_PLAY_SERVICES,
+                    sourceLanguage = request.sourceLanguage,
+                    targetLanguage = request.targetLanguage
+                )
+            )
+        }
+    }
+
+    private class SequencedVoiceRepository : VoiceRepository {
+        private var sessionCount = 0
+
+        override suspend fun capabilities(languageTag: String): AppResult<VoiceCapabilities> =
+            AppResult.Success(
+                VoiceCapabilities(
+                    whisperReady = true,
+                    offlineTtsReady = false,
+                    message = "Whisper is ready"
+                )
+            )
+
+        override fun transcribe(languageTag: String): Flow<VoiceTranscript> = flow {
+            sessionCount += 1
+            emit(VoiceTranscript.Final(if (sessionCount == 1) "old" else "new"))
+            awaitCancellation()
+        }
+
+        override suspend fun speak(text: String, languageTag: String): AppResult<Unit> =
+            AppResult.Success(Unit)
+    }
+
+    private class FailingVoiceRepository : VoiceRepository {
+        override suspend fun capabilities(languageTag: String): AppResult<VoiceCapabilities> =
+            AppResult.Success(
+                VoiceCapabilities(
+                    whisperReady = true,
+                    offlineTtsReady = false,
+                    message = "Whisper is ready"
+                )
+            )
+
+        override fun transcribe(languageTag: String): Flow<VoiceTranscript> = flow {
+            emit(VoiceTranscript.Failed("Microphone capture stopped unexpectedly"))
         }
 
         override suspend fun speak(text: String, languageTag: String): AppResult<Unit> =

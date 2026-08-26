@@ -7,7 +7,10 @@ import com.chatbuddy.domain.model.OcrResult
 import com.chatbuddy.domain.repository.OcrRepository
 import com.chatbuddy.data.repository.CameraOcrAnalyzer
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,10 +31,14 @@ class OcrViewModel @Inject constructor(
 ) : ViewModel() {
     private val _state = MutableStateFlow(OcrUiState())
     val state: StateFlow<OcrUiState> = _state.asStateFlow()
+    private val operationGeneration = AtomicLong(0L)
+    private var recognitionJob: Job? = null
 
     init {
         cameraAnalyzer.setCallbacks(
             onResult = { result ->
+                operationGeneration.incrementAndGet()
+                recognitionJob?.cancel()
                 _state.update {
                     it.copy(result = result, imageUri = null, processing = false, error = null)
                 }
@@ -43,14 +50,44 @@ class OcrViewModel @Inject constructor(
     }
 
     fun recognize(uri: String, languageTag: String = "en") {
-        viewModelScope.launch {
+        val operation = operationGeneration.incrementAndGet()
+        recognitionJob?.cancel()
+        recognitionJob = viewModelScope.launch {
             _state.update {
                 it.copy(result = null, imageUri = uri, processing = true, error = null)
             }
-            when (val result = repository.recognizeImage(uri, languageTag)) {
-                is AppResult.Success -> _state.update { it.copy(result = result.data, processing = false) }
-                is AppResult.Error -> _state.update { it.copy(processing = false, error = result.message) }
-                AppResult.Loading -> Unit
+            if (uri.isBlank()) {
+                _state.update {
+                    if (operation == operationGeneration.get()) {
+                        it.copy(processing = false, error = "An image URI is required for OCR.")
+                    } else it
+                }
+                return@launch
+            }
+            try {
+                when (val result = repository.recognizeImage(uri, languageTag.ifBlank { "en" })) {
+                    is AppResult.Success -> _state.update {
+                        if (operation == operationGeneration.get()) {
+                            it.copy(result = result.data, processing = false, error = null)
+                        } else it
+                    }
+                    is AppResult.Error -> _state.update {
+                        if (operation == operationGeneration.get()) {
+                            it.copy(processing = false, error = result.message)
+                        } else it
+                    }
+                    AppResult.Loading -> _state.update {
+                        if (operation == operationGeneration.get()) it.copy(processing = true) else it
+                    }
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Throwable) {
+                _state.update {
+                    if (operation == operationGeneration.get()) {
+                        it.copy(processing = false, error = error.message ?: "On-device OCR failed.")
+                    } else it
+                }
             }
         }
     }
@@ -66,6 +103,8 @@ class OcrViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        operationGeneration.incrementAndGet()
+        recognitionJob?.cancel()
         cameraAnalyzer.clearCallbacks()
         cameraAnalyzer.close()
         super.onCleared()

@@ -8,4 +8,7 @@ interface WhisperEngine {
     val isReady: Boolean
     suspend fun ensureLoaded(): AppResult<Unit>
     fun transcribe(samples: ShortArray, languageTag: String, partial: Boolean): Flow<VoiceTranscript>
+
+    /** Releases the native context and any SAF descriptor retained for native loading. */
+    suspend fun close() = Unit
 }

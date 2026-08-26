@@ -5,11 +5,11 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -17,10 +17,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -40,51 +40,86 @@ fun CameraPreview(
             scaleType = PreviewView.ScaleType.FILL_CENTER
         }
     }
-    val currentAnalyzer = rememberUpdatedState(analyzer)
     val currentOnError = rememberUpdatedState(onError)
     val currentOnReady = rememberUpdatedState(onReady)
-    DisposableEffect(lifecycleOwner, previewView) {
-        var provider: ProcessCameraProvider? = null
-        var analysis: ImageAnalysis? = null
+
+    DisposableEffect(lifecycleOwner, previewView, analyzer) {
         var disposed = false
+        var provider: ProcessCameraProvider? = null
+        var previewUseCase: Preview? = null
+        var analysisUseCase: ImageAnalysis? = null
         val mainExecutor = ContextCompat.getMainExecutor(context)
-        val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+        val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "chatbuddy-camera-analysis").apply { isDaemon = true }
+        }
         val future = ProcessCameraProvider.getInstance(context)
+
+        fun unbindAndShutdown() {
+            analysisUseCase?.clearAnalyzer()
+            val cameraProvider = provider
+            val preview = previewUseCase
+            val analysis = analysisUseCase
+            if (cameraProvider != null && (preview != null || analysis != null)) {
+                runCatching {
+                    cameraProvider.unbind(*listOfNotNull(preview, analysis).toTypedArray())
+                }
+            }
+            analysisExecutor.shutdown()
+        }
+
         future.addListener({
             if (disposed) return@addListener
             try {
                 val cameraProvider = future.get()
+                if (disposed) return@addListener
                 val selector = CameraSelector.DEFAULT_BACK_CAMERA
                 if (!cameraProvider.hasCamera(selector)) {
+                    analysisExecutor.shutdown()
                     currentOnError.value("Back camera is not available on this device.")
                     return@addListener
                 }
-                provider = cameraProvider
+
                 val preview = Preview.Builder().build().also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
                 val imageAnalysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
-                analysis = imageAnalysis
-                imageAnalysis.setAnalyzer(analysisExecutor, currentAnalyzer.value)
+                imageAnalysis.setAnalyzer(analysisExecutor, analyzer)
+
+                if (disposed) {
+                    imageAnalysis.clearAnalyzer()
+                    analysisExecutor.shutdown()
+                    return@addListener
+                }
                 cameraProvider.unbindAll()
+                if (disposed) {
+                    imageAnalysis.clearAnalyzer()
+                    analysisExecutor.shutdown()
+                    return@addListener
+                }
+                provider = cameraProvider
+                previewUseCase = preview
+                analysisUseCase = imageAnalysis
                 cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
-                currentOnReady.value()
-            } catch (error: Exception) {
-                currentOnError.value(
-                    error.message?.takeIf { it.isNotBlank() }
-                        ?: "Camera could not be started. Check camera permission and availability."
-                )
+                if (!disposed) currentOnReady.value()
+            } catch (error: Throwable) {
+                unbindAndShutdown()
+                if (!disposed) {
+                    currentOnError.value(
+                        error.message?.takeIf { it.isNotBlank() }
+                            ?: "Camera could not be started. Check camera permission and availability."
+                    )
+                }
             }
         }, mainExecutor)
+
         onDispose {
             disposed = true
-            analysis?.clearAnalyzer()
-            provider?.unbindAll()
-            analysisExecutor.shutdown()
+            unbindAndShutdown()
         }
     }
+
     Box(
         modifier = modifier
             .fillMaxWidth()

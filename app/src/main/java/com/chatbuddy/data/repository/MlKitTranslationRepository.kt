@@ -1,5 +1,13 @@
 package com.chatbuddy.data.repository
 
+import com.google.android.gms.tasks.OnCompleteListener
+import com.google.android.gms.tasks.Task
+import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.common.model.RemoteModelManager
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.TranslateRemoteModel
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.LanguageOption
 import com.chatbuddy.domain.model.TranslationModelStatus
@@ -7,50 +15,77 @@ import com.chatbuddy.domain.model.TranslationProviderKind
 import com.chatbuddy.domain.model.TranslationRequest
 import com.chatbuddy.domain.model.TranslationResult
 import com.chatbuddy.domain.repository.TranslationRepository
-import com.chatbuddy.utils.awaitTask
-import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.common.model.RemoteModelManager
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.TranslateRemoteModel
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.TranslatorOptions
-import javax.inject.Singleton
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.util.Locale
 import javax.inject.Inject
+import javax.inject.Singleton
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 @Singleton
 class MlKitTranslationRepository @Inject constructor() : TranslationRepository {
-    override suspend fun availableLanguages(): AppResult<List<LanguageOption>> = withContext(Dispatchers.Default) {
-        AppResult.Success(
-            TranslateLanguage.getAllLanguages().map { tag ->
-                LanguageOption(tag, Locale.forLanguageTag(tag).getDisplayLanguage(Locale.getDefault()))
-            }.sortedBy { it.displayName }
-        )
-    }
+    /** ML Kit model operations are serialized so a status read cannot race a download. */
+    private val modelMutex = Mutex()
+
+    override suspend fun availableLanguages(): AppResult<List<LanguageOption>> =
+        withContext(Dispatchers.Default) {
+            try {
+                AppResult.Success(
+                    TranslateLanguage.getAllLanguages()
+                        .asSequence()
+                        .mapNotNull(::normalizeLanguageTag)
+                        .distinct()
+                        .map { tag ->
+                            LanguageOption(
+                                tag = tag,
+                                displayName = Locale.forLanguageTag(tag)
+                                    .getDisplayLanguage(Locale.getDefault())
+                                    .ifBlank { tag }
+                            )
+                        }
+                        .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.displayName })
+                        .toList()
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                AppResult.Error("Unable to list offline translation languages.", error)
+            }
+        }
 
     override suspend fun modelStatus(
         sourceLanguage: String,
         targetLanguage: String
     ): AppResult<TranslationModelStatus> = withContext(Dispatchers.IO) {
-        if (sourceLanguage.isBlank() || targetLanguage.isBlank()) {
-            return@withContext AppResult.Error("Select source and target languages first.")
-        }
-        try {
-            val manager = RemoteModelManager.getInstance()
-            val sourceReady = manager.isModelDownloaded(modelFor(sourceLanguage)).awaitTask()
-            val targetReady = sourceLanguage == targetLanguage ||
-                manager.isModelDownloaded(modelFor(targetLanguage)).awaitTask()
-            AppResult.Success(
-                TranslationModelStatus(
-                    sourceLanguage = sourceLanguage,
-                    targetLanguage = targetLanguage,
-                    ready = sourceReady && targetReady
+        val languages = validatedPair(sourceLanguage, targetLanguage)
+            ?: return@withContext AppResult.Error("Select supported source and target languages first.")
+
+        modelMutex.withLock {
+            try {
+                val manager = RemoteModelManager.getInstance()
+                val sourceReady = manager
+                    .isModelDownloaded(modelFor(languages.first))
+                    .awaitCancellable()
+                val targetReady = languages.first == languages.second || manager
+                    .isModelDownloaded(modelFor(languages.second))
+                    .awaitCancellable()
+                AppResult.Success(
+                    TranslationModelStatus(
+                        sourceLanguage = languages.first,
+                        targetLanguage = languages.second,
+                        ready = sourceReady && targetReady
+                    )
                 )
-            )
-        } catch (error: Exception) {
-            AppResult.Error("Unable to check offline language packs.", error)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                AppResult.Error("Unable to check offline language packs.", error)
+            }
         }
     }
 
@@ -58,65 +93,145 @@ class MlKitTranslationRepository @Inject constructor() : TranslationRepository {
         sourceLanguage: String,
         targetLanguage: String
     ): AppResult<Unit> = withContext(Dispatchers.IO) {
-        if (sourceLanguage.isBlank() || targetLanguage.isBlank()) {
-            return@withContext AppResult.Error("Select source and target languages first.")
-        }
-        try {
-            val manager = RemoteModelManager.getInstance()
-            val conditions = DownloadConditions.Builder().requireWifi().build()
-            manager.download(modelFor(sourceLanguage), conditions).awaitTask()
-            if (sourceLanguage != targetLanguage) {
-                manager.download(modelFor(targetLanguage), conditions).awaitTask()
+        val languages = validatedPair(sourceLanguage, targetLanguage)
+            ?: return@withContext AppResult.Error("Select supported source and target languages first.")
+
+        modelMutex.withLock {
+            try {
+                val manager = RemoteModelManager.getInstance()
+                val conditions = DownloadConditions.Builder().requireWifi().build()
+                val models = listOf(languages.first, languages.second)
+                    .distinct()
+                    .map(::modelFor)
+
+                for (model in models) {
+                    if (!manager.isModelDownloaded(model).awaitCancellable()) {
+                        manager.download(model, conditions).awaitCancellable()
+                    }
+                }
+
+                val ready = models.all { manager.isModelDownloaded(it).awaitCancellable() }
+                if (!ready) {
+                    return@withLock AppResult.Error(
+                        "Offline language pack is not ready. Keep Wi-Fi connected and try again."
+                    )
+                }
+                AppResult.Success(Unit)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                AppResult.Error(
+                    "Language pack download failed. Keep Wi-Fi connected and try again.",
+                    error
+                )
             }
-            AppResult.Success(Unit)
-        } catch (error: Exception) {
-            AppResult.Error(
-                "Language pack download failed. Connect to Wi-Fi and try again.",
-                error
-            )
         }
     }
 
     override suspend fun translate(request: TranslationRequest): AppResult<TranslationResult> =
         withContext(Dispatchers.IO) {
-            if (request.text.isBlank()) return@withContext AppResult.Success(
-                TranslationResult("", TranslationProviderKind.ML_KIT_PLAY_SERVICES, request.sourceLanguage, request.targetLanguage)
-            )
-            if (request.sourceLanguage == request.targetLanguage) return@withContext AppResult.Success(
-                TranslationResult(request.text, TranslationProviderKind.ML_KIT_PLAY_SERVICES, request.sourceLanguage, request.targetLanguage)
-            )
-            try {
-                val manager = RemoteModelManager.getInstance()
-                val sourceModel = TranslateRemoteModel.Builder(request.sourceLanguage).build()
-                val targetModel = TranslateRemoteModel.Builder(request.targetLanguage).build()
-                val downloaded = manager.getDownloadedModels(TranslateRemoteModel::class.java).awaitTask()
-                if (sourceModel !in downloaded || targetModel !in downloaded) {
-                    return@withContext AppResult.Error(
-                        "Offline language model is not downloaded. Use model setup before translating."
+            val languages = validatedPair(request.sourceLanguage, request.targetLanguage)
+                ?: return@withContext AppResult.Error("Select supported source and target languages first.")
+
+            if (request.text.isBlank()) {
+                return@withContext AppResult.Success(
+                    TranslationResult(
+                        text = "",
+                        provider = TranslationProviderKind.ML_KIT_PLAY_SERVICES,
+                        sourceLanguage = languages.first,
+                        targetLanguage = languages.second
                     )
-                }
-                val translator = Translation.getClient(
-                    TranslatorOptions.Builder()
-                        .setSourceLanguage(request.sourceLanguage)
-                        .setTargetLanguage(request.targetLanguage)
-                        .build()
                 )
-                translator.use {
-                    val translated = it.translate(request.text).awaitTask()
-                    AppResult.Success(
-                        TranslationResult(
-                            text = translated,
-                            provider = TranslationProviderKind.ML_KIT_PLAY_SERVICES,
-                            sourceLanguage = request.sourceLanguage,
-                            targetLanguage = request.targetLanguage
-                        )
+            }
+            if (languages.first == languages.second) {
+                return@withContext AppResult.Success(
+                    TranslationResult(
+                        text = request.text,
+                        provider = TranslationProviderKind.ML_KIT_PLAY_SERVICES,
+                        sourceLanguage = languages.first,
+                        targetLanguage = languages.second
                     )
+                )
+            }
+
+            modelMutex.withLock {
+                try {
+                    val manager = RemoteModelManager.getInstance()
+                    val sourceModel = modelFor(languages.first)
+                    val targetModel = modelFor(languages.second)
+                    val sourceReady = manager.isModelDownloaded(sourceModel).awaitCancellable()
+                    val targetReady = manager.isModelDownloaded(targetModel).awaitCancellable()
+                    if (!sourceReady || !targetReady) {
+                        return@withLock AppResult.Error(
+                            "Offline language model is not downloaded. Use model setup before translating."
+                        )
+                    }
+
+                    val translator = Translation.getClient(
+                        TranslatorOptions.Builder()
+                            .setSourceLanguage(languages.first)
+                            .setTargetLanguage(languages.second)
+                            .build()
+                    )
+                    translator.use {
+                        val translated = it.translate(request.text).awaitCancellable()
+                        AppResult.Success(
+                            TranslationResult(
+                                text = translated,
+                                provider = TranslationProviderKind.ML_KIT_PLAY_SERVICES,
+                                sourceLanguage = languages.first,
+                                targetLanguage = languages.second
+                            )
+                        )
+                    }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (error: Exception) {
+                    AppResult.Error("Offline ML Kit translation failed.", error)
                 }
-            } catch (error: Exception) {
-                AppResult.Error("Offline ML Kit translation failed", error)
             }
         }
 
+    private fun validatedPair(sourceLanguage: String, targetLanguage: String): Pair<String, String>? {
+        val supported = TranslateLanguage.getAllLanguages()
+            .asSequence()
+            .mapNotNull(::normalizeLanguageTag)
+            .toSet()
+        val source = normalizeLanguageTag(sourceLanguage)
+        val target = normalizeLanguageTag(targetLanguage)
+        return if (source != null && target != null && source in supported && target in supported) {
+            source to target
+        } else {
+            null
+        }
+    }
+
+    private fun normalizeLanguageTag(languageTag: String): String? =
+        languageTag.trim().lowercase(Locale.ROOT).takeIf(String::isNotBlank)
+
     private fun modelFor(languageTag: String): TranslateRemoteModel =
         TranslateRemoteModel.Builder(languageTag).build()
+
+    /**
+     * ML Kit tasks are callback based. The active-continuation guard prevents a completed
+     * background task from resuming a cancelled ViewModel operation.
+     */
+    private suspend fun <T> Task<T>.awaitCancellable(): T =
+        suspendCancellableCoroutine { continuation ->
+            val listener = OnCompleteListener<T> { task ->
+                if (!continuation.isActive) return@OnCompleteListener
+                try {
+                    if (task.isSuccessful) {
+                        continuation.resume(task.result)
+                    } else {
+                        continuation.resumeWithException(
+                            task.exception ?: IllegalStateException("ML Kit task failed without an exception")
+                        )
+                    }
+                } catch (_: IllegalStateException) {
+                    // Cancellation may race with the task callback; the operation is already terminal.
+                }
+            }
+            addOnCompleteListener(listener)
+        }
 }
