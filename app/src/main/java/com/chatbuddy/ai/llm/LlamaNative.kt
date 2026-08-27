@@ -13,9 +13,11 @@ internal object LlamaNative {
         cacheKey: String,
         maxTokens: Int,
         temperature: Float,
-        topP: Float
+        topP: Float,
+        useGemma4Template: Boolean
     ): Int
     external fun nativeNext(): String?
     external fun nativeLastStatus(): Int
+    external fun nativeCancel()
     external fun nativeClose()
 }

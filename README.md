@@ -142,7 +142,7 @@ Evidence ini membuktikan build, UI shell, navigation, dan launch; tidak membukti
 
 - `:app:compileDebugKotlin` — pass.
 - `:app:testDebugUnitTest` — pass, 40 tests.
-- `:app:connectedDebugAndroidTest` — pass, 17/17 tests pada Samsung `SM-G988B`, Android 13.
+- `:app:connectedDebugAndroidTest` — target Samsung `SM-G988B`, Android 13 menyelesaikan 17/17 test (0 failed/0 skipped). Task aggregate juga menemukan device lain; salah satunya tertahan `INSTALL_FAILED_USER_RESTRICTED`, jadi hasil ini bukan pass global multi-device.
 - `:app:lintDebug` — pass tanpa error; warning dependency/deprecation yang tersisa tetap perlu direkonsiliasi sebelum release.
 - `:app:externalNativeBuildDebug` — pass untuk `arm64-v8a` dan `armeabi-v7a`.
 - `:app:assembleDebug` — pass; APK debug dipasang dengan `adb install -r` dan `com.chatbuddy/.MainActivity` berhasil diluncurkan.
@@ -150,6 +150,8 @@ Evidence ini membuktikan build, UI shell, navigation, dan launch; tidak membukti
 - Device Settings smoke mengonfirmasi akses Room driver yang benar dan status backend yang jujur: `ROOM_EXACT_DEGRADED` ketika extension sqlite-vec tidak tersedia, tanpa mengklaim `SQLITE_VEC`; `cacheDir miss` tetap menjelaskan fallback ke file SAF terverifikasi.
 - Persona smoke code path memiliki template `Sunny Companion` dan policy probing/grounding global untuk persona custom; activation failure dan success feedback dipisahkan secara eksplisit.
 - `preview/chatbuddy-device.png` dan `preview/chatbuddy-translate-device.png` diperbarui dari screenshot APK ChatBuddy yang benar-benar berjalan di device; preview bukan mock UI.
+- Regression native LLM memperbaiki batch prompt dengan mengisi `n_tokens` secara eksplisit, memakai renderer canonical Gemma 4 hanya untuk manifest artifact yang terverifikasi, serta memisahkan error prompt, tokenisasi, sampler, decode, JNI, dan cancellation. JNI call diserialisasi, marker kontrol dari input tidak dipercaya, dan cache key memiliki schema version.
+- Device smoke setelah perbaikan mencatat `Prepared prompt tokens=869 context=4096` tanpa error code 2. Completion assistant Gemma E2B tetap `BLOCKED/PENDING`: pada bounded run CPU handset memakai lebih dari enam menit tanpa menyelesaikan prefill batch pertama, sehingga tidak diklaim sebagai chat inference yang berhasil.
 
 Gate berikut masih `BLOCKED/PENDING` karena belum ada sesi artifact nyata yang selesai pada device ini: pemilihan folder SAF writable, download dan checksum Gemma/MiniLM/Whisper, process-kill/resume, chat RAG offline, sqlite-vec retrieval, web fallback live dengan citation, OCR kamera/gallery, live Whisper/TTS, ingest 200 MB, serta uninstall/reinstall persistence. Build atau instrumentation pass tidak digunakan sebagai pengganti evidence runtime tersebut.
 

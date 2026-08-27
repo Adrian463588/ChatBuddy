@@ -97,3 +97,27 @@ disambiguation questions for ambiguous intent:
 
 - https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/prompt-design-strategies
 - https://learn.microsoft.com/en-us/microsoft-copilot-studio/guidance/cux-disambiguate-intent
+
+## ADR-014 — Gemma 4 prompt preparation and native lifecycle are fail-closed
+
+The pinned llama.cpp version does not interpret Gemma 4's canonical turn
+template, so ChatBuddy uses the official Gemma 4 renderer only for the verified
+manifest artifact. The native wrapper also populates `llama_batch.n_tokens`
+explicitly because `llama_batch_init` initializes it to zero; this prevents a
+valid token buffer from being submitted as an empty prompt. JNI returns
+separate prompt, tokenization, sampler, decode, JNI-string, native-exception,
+and cancellation states. Native calls are serialized, allocation checks cover
+the complete batch, prompt cache keys include a schema version, and untrusted
+input control markers are escaped before template rendering.
+
+The 2026-08-27 device smoke on Samsung `SM-G988B` prepared 869 prompt tokens
+without the previous code 2, but the Gemma E2B CPU prefill did not complete in
+a bounded run longer than six minutes. Full assistant completion remains
+`BLOCKED/PENDING` until a bounded real-device inference session produces a
+token and completion event.
+
+References:
+
+- https://huggingface.co/google/gemma-4-E2B-it/raw/main/chat_template.jinja
+- https://github.com/ggml-org/llama.cpp/blob/master/src/llama-chat.cpp
+- https://github.com/ggml-org/llama.cpp/wiki/Templates-supported-by-llama_chat_apply_template/b239deed5fd7f6bf6c985c91c3e5eec2945c7f1b
