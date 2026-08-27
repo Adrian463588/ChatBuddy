@@ -25,23 +25,30 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.chatbuddy.domain.model.OcrResult
+import com.chatbuddy.domain.model.TranslatedBlock
 import com.chatbuddy.presentation.translate.TranslationUiState
 
 @Composable
 internal fun LiveOcrTranscript(
     result: OcrResult?,
     translationState: TranslationUiState,
+    translatedBlocks: List<TranslatedBlock> = emptyList(),
+    translationProcessing: Boolean = false,
+    translationError: String? = null,
     translationProvider: String?,
     onDownloadTranslation: () -> Unit,
     onStopCamera: () -> Unit,
+    onCapture: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val transcript = result?.text?.trim().orEmpty()
-    val translation = translationState.result
+    val blockTranslation = translatedBlocks.joinToString(" ") { it.translatedText }.trim()
+    val directTranslation = translationState.result
         ?.takeIf { translationState.sourceText.trim() == transcript }
         ?.text
         ?.trim()
         .orEmpty()
+    val translation = blockTranslation.ifBlank { directTranslation }
     val accessibilityText = if (transcript.isBlank()) {
         "Live OCR transcript: scanning"
     } else {
@@ -91,6 +98,9 @@ internal fun LiveOcrTranscript(
                     }
                 }
             }
+            OutlinedButton(onClick = onCapture, modifier = Modifier.fillMaxWidth()) {
+                Text("Capture and translate")
+            }
             if (transcript.isBlank()) {
                 Text(
                     text = "Point the camera at text",
@@ -105,7 +115,7 @@ internal fun LiveOcrTranscript(
                     overflow = TextOverflow.Ellipsis
                 )
                 when {
-                    translationState.loading -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    translationProcessing -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     translation.isNotBlank() -> {
                         Text(
                             text = "Translation",
@@ -122,13 +132,24 @@ internal fun LiveOcrTranscript(
                             Text(it, style = MaterialTheme.typography.labelSmall)
                         }
                     }
-                    translationState.error != null -> Text(
-                        text = translationState.error.orEmpty(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    translationError != null -> {
+                        Text(
+                            text = translationError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (!translationState.modelReady &&
+                            !translationState.modelChecking &&
+                            !translationState.modelDownloading
+                        ) {
+                            OutlinedButton(
+                                onClick = onDownloadTranslation,
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Download translation pack") }
+                        }
+                    }
                     !translationState.modelReady &&
                         !translationState.modelChecking &&
                         !translationState.modelDownloading -> {

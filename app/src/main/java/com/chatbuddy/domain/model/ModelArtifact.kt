@@ -16,13 +16,18 @@ data class ModelArtifact(
     val sha256: String,
     val license: String,
     val abi: Set<String>,
-    val storageKind: ModelStorageKind
+    val storageKind: ModelStorageKind,
+    val format: String = "binary",
+    val mimeType: String = "application/octet-stream"
 )
 
 sealed interface ModelStatus {
     data object Unavailable : ModelStatus
     data object NotInstalled : ModelStatus
-    data class Queued(val totalBytes: Long) : ModelStatus
+    data class Queued(
+        val totalBytes: Long,
+        val downloadedBytes: Long = 0L
+    ) : ModelStatus
     data class Downloading(val downloadedBytes: Long, val totalBytes: Long) : ModelStatus
     data class Paused(val downloadedBytes: Long, val totalBytes: Long) : ModelStatus
     data class Verifying(val downloadedBytes: Long, val totalBytes: Long) : ModelStatus

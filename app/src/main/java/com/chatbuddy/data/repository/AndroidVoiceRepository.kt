@@ -1,6 +1,7 @@
 package com.chatbuddy.data.repository
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
@@ -22,6 +23,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -106,6 +108,7 @@ class AndroidVoiceRepository @Inject constructor(
             )
         }
 
+    @SuppressLint("MissingPermission")
     override fun transcribe(languageTag: String): Flow<VoiceTranscript> = channelFlow {
         voiceSessionMutex.withLock {
             if (!hasRecordAudioPermission()) {
@@ -148,8 +151,21 @@ class AndroidVoiceRepository @Inject constructor(
             }
 
             val bufferSize = minBufferSize.coerceAtLeast(AUDIO_FRAME_SAMPLES * Short.SIZE_BYTES * 2)
-            val frameChannel = Channel<ShortArray>(capacity = FRAME_CHANNEL_CAPACITY)
+            // Whisper partials can take longer than one audio frame. Keep capture
+            // independent from inference; a slow inference pass drops the oldest
+            // queued frame instead of terminating the microphone session.
+            val frameChannel = Channel<ShortArray>(
+                capacity = FRAME_CHANNEL_CAPACITY,
+                onBufferOverflow = BufferOverflow.DROP_OLDEST
+            )
             val captureJob = launch(Dispatchers.IO) {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    trySend(VoiceTranscript.Failed("Microphone permission was revoked"))
+                    frameChannel.close()
+                    return@launch
+                }
                 val recorder = try {
                     AudioRecord(
                         MediaRecorder.AudioSource.MIC,
@@ -182,7 +198,7 @@ class AndroidVoiceRepository @Inject constructor(
                         )
                         when (classifyAudioRead(read)) {
                             AudioReadState.DATA -> {
-                                if (!frameChannel.trySend(frame.copyOf(read)).isSuccess) break
+                                frameChannel.trySend(frame.copyOf(read))
                             }
                             AudioReadState.EMPTY -> yield()
                             AudioReadState.TERMINAL -> {

@@ -24,7 +24,9 @@ const llama_vocab *g_vocab = nullptr;
 int32_t g_position = 0;
 int32_t g_generated = 0;
 int32_t g_maxGenerated = 0;
+int32_t g_lastNextStatus = 0;
 std::vector<llama_token> g_cachedPromptTokens;
+std::string g_promptCacheKey;
 int32_t g_lastCacheHitTokens = 0;
 bool g_backendInitialized = false;
 std::mutex g_mutex;
@@ -58,7 +60,9 @@ void freeRuntime() {
     g_position = 0;
     g_generated = 0;
     g_maxGenerated = 0;
+    g_lastNextStatus = 0;
     g_cachedPromptTokens.clear();
+    g_promptCacheKey.clear();
     g_lastCacheHitTokens = 0;
 }
 
@@ -95,10 +99,14 @@ void clearMemoryAndPromptCache() {
     llama_memory_clear(llama_get_memory(g_context), true);
     g_position = 0;
     g_cachedPromptTokens.clear();
+    g_promptCacheKey.clear();
     g_lastCacheHitTokens = 0;
 }
 
-bool preparePrompt(const std::vector<llama_token> &tokens) {
+bool preparePrompt(const std::vector<llama_token> &tokens, const std::string &cacheKey) {
+    if (g_promptCacheKey != cacheKey) {
+        clearMemoryAndPromptCache();
+    }
     llama_memory_t memory = llama_get_memory(g_context);
     const size_t cachedSize = g_cachedPromptTokens.size();
     const size_t commonSize = static_cast<size_t>(std::mismatch(
@@ -149,6 +157,7 @@ bool preparePrompt(const std::vector<llama_token> &tokens) {
     }
 
     g_cachedPromptTokens = tokens;
+    g_promptCacheKey = cacheKey;
     g_lastCacheHitTokens = static_cast<int32_t>(cachedSize == 0 ? 0 : commonSize);
     __android_log_print(
         ANDROID_LOG_DEBUG,
@@ -292,6 +301,7 @@ Java_com_chatbuddy_ai_llm_LlamaNative_nativeStart(
     jclass,
     jstring systemPromptString,
     jstring userPromptString,
+    jstring cacheKeyString,
     jint maxTokens,
     jfloat temperature,
     jfloat topP) {
@@ -301,10 +311,19 @@ Java_com_chatbuddy_ai_llm_LlamaNative_nativeStart(
     }
     const char *systemPrompt = env->GetStringUTFChars(systemPromptString, nullptr);
     const char *userPrompt = env->GetStringUTFChars(userPromptString, nullptr);
+    const char *cacheKeyChars = env->GetStringUTFChars(cacheKeyString, nullptr);
+    if (systemPrompt == nullptr || userPrompt == nullptr || cacheKeyChars == nullptr) {
+        if (systemPrompt != nullptr) env->ReleaseStringUTFChars(systemPromptString, systemPrompt);
+        if (userPrompt != nullptr) env->ReleaseStringUTFChars(userPromptString, userPrompt);
+        if (cacheKeyChars != nullptr) env->ReleaseStringUTFChars(cacheKeyString, cacheKeyChars);
+        return 2;
+    }
     std::string formatted;
+    const std::string cacheKey(cacheKeyChars);
     const bool formattedOk = applyChatTemplate(systemPrompt, userPrompt, formatted);
     env->ReleaseStringUTFChars(systemPromptString, systemPrompt);
     env->ReleaseStringUTFChars(userPromptString, userPrompt);
+    env->ReleaseStringUTFChars(cacheKeyString, cacheKeyChars);
     if (!formattedOk) {
         return 2;
     }
@@ -315,6 +334,7 @@ Java_com_chatbuddy_ai_llm_LlamaNative_nativeStart(
     }
     g_generated = 0;
     g_maxGenerated = 0;
+    g_lastNextStatus = 0;
     freeSampler();
     const auto chainParams = llama_sampler_chain_default_params();
     g_sampler = llama_sampler_chain_init(chainParams);
@@ -326,7 +346,7 @@ Java_com_chatbuddy_ai_llm_LlamaNative_nativeStart(
         std::clamp(topP, 0.05f, 1.0f), 1));
     llama_sampler_chain_add(g_sampler, llama_sampler_init_temp(std::max(temperature, 0.01f)));
     llama_sampler_chain_add(g_sampler, llama_sampler_init_dist(0xC0FFEEu));
-    if (!preparePrompt(tokens)) {
+    if (!preparePrompt(tokens, cacheKey)) {
         freeSampler();
         return 5;
     }
@@ -339,11 +359,13 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_chatbuddy_ai_llm_LlamaNative_nativeNext(JNIEnv *env, jclass) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_sampler == nullptr || g_context == nullptr || g_generated >= g_maxGenerated) {
+        g_lastNextStatus = 1;
         return nullptr;
     }
     const llama_token token = llama_sampler_sample(g_sampler, g_context, -1);
     llama_sampler_accept(g_sampler, token);
     if (llama_vocab_is_eog(g_vocab, token)) {
+        g_lastNextStatus = 1;
         return nullptr;
     }
     g_batch.n_tokens = 1;
@@ -353,12 +375,20 @@ Java_com_chatbuddy_ai_llm_LlamaNative_nativeNext(JNIEnv *env, jclass) {
     g_batch.seq_id[0][0] = 0;
     g_batch.logits[0] = 1;
     if (llama_decode(g_context, g_batch) != 0) {
+        g_lastNextStatus = 2;
         return nullptr;
     }
     ++g_position;
     ++g_generated;
+    g_lastNextStatus = 0;
     const std::string piece = tokenToString(token);
     return env->NewStringUTF(piece.c_str());
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_chatbuddy_ai_llm_LlamaNative_nativeLastStatus(JNIEnv *, jclass) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_lastNextStatus;
 }
 
 extern "C" JNIEXPORT void JNICALL

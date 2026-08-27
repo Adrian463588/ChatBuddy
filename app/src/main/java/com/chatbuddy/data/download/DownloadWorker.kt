@@ -16,24 +16,37 @@ import com.chatbuddy.domain.model.AppResult
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 
 @HiltWorker
 class DownloadWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
     private val manager: ResumableDownloadManager,
-    private val stateStore: ModelStateStore
+    private val stateStore: ModelStateStore,
+    private val safModelStore: SafModelStore
 ) : CoroutineWorker(appContext, workerParams) {
     override suspend fun doWork(): Result {
         val id = inputData.getString(KEY_ARTIFACT_ID)
             ?: return Result.failure(workDataOf(KEY_ERROR to "Download request has no model id"))
         val artifact = stateStore.find(id)
             ?: return Result.failure(workDataOf(KEY_ERROR to "Model manifest entry is unavailable"))
-        stateStore.update(id, ModelStatus.Downloading(0L, artifact.sizeBytes))
+        if (stateStore.isPauseRequested(id)) {
+            stateStore.markPaused(id)
+            return Result.success()
+        }
         val foreground = artifact.sizeBytes >= FOREGROUND_THRESHOLD_BYTES
         if (foreground) {
             try {
-                setForeground(createForegroundInfo(artifact.displayName, 0L, artifact.sizeBytes))
+                setForeground(
+                    createForegroundInfo(
+                        artifact.displayName,
+                        safModelStore.checkpoint(artifact).coerceIn(0L, artifact.sizeBytes),
+                        artifact.sizeBytes
+                    )
+                )
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 val message = "Background model download is unavailable: ${error.message ?: "foreground service failed"}"
                 stateStore.update(id, ModelStatus.Error(message))
@@ -43,7 +56,14 @@ class DownloadWorker @AssistedInject constructor(
         return when (val result = runDownload(id, foreground)) {
             is AppResult.Success -> Result.success()
             is AppResult.Error -> if (result.cause is IOException) {
-                stateStore.update(id, ModelStatus.Queued(artifact.sizeBytes))
+                stateStore.update(
+                    id,
+                    ModelStatus.Queued(
+                        totalBytes = artifact.sizeBytes,
+                        downloadedBytes = safModelStore.checkpoint(artifact)
+                            .coerceIn(0L, artifact.sizeBytes)
+                    )
+                )
                 Result.retry()
             } else {
                 Result.failure(workDataOf(KEY_ERROR to result.message))

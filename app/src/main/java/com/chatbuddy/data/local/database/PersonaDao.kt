@@ -15,18 +15,28 @@ interface PersonaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(persona: PersonaEntity)
 
+    @Transaction
+    suspend fun insertAndActivate(persona: PersonaEntity) {
+        clearActive()
+        insert(persona.copy(active = true))
+    }
+
     @Query("DELETE FROM personas WHERE id = :id")
-    suspend fun delete(id: String)
+    suspend fun delete(id: String): Int
+
+    @Query("SELECT id FROM personas WHERE id = :id LIMIT 1")
+    suspend fun findId(id: String): String?
 
     @Query("UPDATE personas SET active = 0")
     suspend fun clearActive()
 
     @Query("UPDATE personas SET active = 1 WHERE id = :id")
-    suspend fun markActive(id: String)
+    suspend fun markActive(id: String): Int
 
     @Transaction
-    suspend fun setActive(id: String) {
+    suspend fun setActive(id: String): Boolean {
+        if (findId(id) == null) return false
         clearActive()
-        markActive(id)
+        return markActive(id) == 1
     }
 }

@@ -83,6 +83,40 @@ class LocalRagChatRepositoryTest {
         assertEquals(null, llm.lastContext)
     }
 
+    @Test
+    fun localContextFailureDoesNotTriggerWebFallback() = runTest {
+        val web = RecordingWebSearchRepository(
+            AppResult.Success(listOf(webEvidence()))
+        )
+        val repository = repository(
+            vectors = StaticVectorStore(
+                AppResult.Success(
+                    listOf(
+                        Evidence(
+                            documentId = DocumentId("doc"),
+                            documentName = "x".repeat(10_000),
+                            chunkOrdinal = 0,
+                            text = "retrieved context",
+                            score = 0.9f
+                        )
+                    )
+                )
+            ),
+            web = web,
+            llm = RecordingLlm()
+        )
+
+        val events = repository.stream(request(allowWebFallback = true)).toList()
+
+        assertEquals(0, web.calls)
+        assertTrue(
+            events.filterIsInstance<ChatStreamEvent.Failed>()
+                .single()
+                .message
+                .contains("Local RAG context could not be prepared")
+        )
+    }
+
     private fun repository(
         vectors: VectorStoreRepository,
         web: RecordingWebSearchRepository,
@@ -91,6 +125,7 @@ class LocalRagChatRepositoryTest {
         embedding = StaticEmbedding(),
         vectors = vectors,
         buildContext = com.chatbuddy.domain.usecase.BuildRagContextUseCase(),
+        bindCitations = com.chatbuddy.domain.usecase.BindCitationsUseCase(),
         webSearch = web,
         llm = llm
     )
@@ -107,7 +142,8 @@ class LocalRagChatRepositoryTest {
         url = "https://en.wikipedia.org/wiki/Example",
         excerpt = "A grounded excerpt",
         content = "A grounded web result.",
-        provider = "Wikipedia"
+        provider = "Wikipedia",
+        sourceId = "wikipedia:1"
     )
 
     private class StaticEmbedding : EmbeddingRepository {
@@ -145,11 +181,12 @@ class LocalRagChatRepositoryTest {
 
         override fun stream(request: ChatRequest, context: String?): Flow<ChatStreamEvent> {
             lastContext = context
+            val marker = if (context?.contains("local:") == true) "[local:doc:0]" else "[wikipedia:1]"
             return flowOf(
                 ChatStreamEvent.Started,
-                ChatStreamEvent.Token("grounded"),
+                ChatStreamEvent.Token("grounded $marker"),
                 ChatStreamEvent.Completed(
-                    ChatMessage("", ChatMessage.Role.ASSISTANT, "grounded")
+                    ChatMessage("", ChatMessage.Role.ASSISTANT, "grounded $marker")
                 )
             )
         }

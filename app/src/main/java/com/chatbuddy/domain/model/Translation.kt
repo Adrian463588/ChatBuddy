@@ -26,3 +26,25 @@ data class TranslationResult(
     val sourceLanguage: String,
     val targetLanguage: String
 )
+
+data class TranslationHistoryEntry(
+    val id: Long = 0L,
+    val sourceText: String,
+    val translatedText: String,
+    val sourceLanguage: String,
+    val targetLanguage: String,
+    val provider: TranslationProviderKind,
+    val createdAtEpochMs: Long
+)
+
+data class TranslatedBlock(
+    val source: OcrTextBlock,
+    val translatedText: String,
+    val provider: TranslationProviderKind
+)
+
+data class ImageTranslationResult(
+    val sourceUri: String,
+    val sourceOcr: OcrResult,
+    val blocks: List<TranslatedBlock>
+)

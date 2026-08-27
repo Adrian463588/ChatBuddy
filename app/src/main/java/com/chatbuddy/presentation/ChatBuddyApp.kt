@@ -27,6 +27,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
@@ -39,18 +40,21 @@ import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Stop
-import androidx.compose.material.icons.outlined.VolumeOff
-import androidx.compose.material.icons.outlined.VolumeUp
+import androidx.compose.material.icons.automirrored.outlined.VolumeOff
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -71,10 +75,12 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -88,6 +94,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -96,6 +104,7 @@ import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import com.chatbuddy.domain.model.ModelStatus
+import com.chatbuddy.domain.model.ModelCacheState
 import com.chatbuddy.domain.model.TranslationProviderKind
 import com.chatbuddy.presentation.common.ModelGate
 import com.chatbuddy.presentation.home.HomeTab
@@ -107,10 +116,14 @@ import com.chatbuddy.presentation.translate.LanguageDropdown
 import com.chatbuddy.presentation.translate.TranslationUiState
 import com.chatbuddy.presentation.ocr.OcrViewModel
 import com.chatbuddy.presentation.ocr.CameraPreview
+import com.chatbuddy.data.repository.CameraOcrAnalyzer
 import com.chatbuddy.presentation.ocr.OcrBoundingBoxOverlay
 import com.chatbuddy.presentation.ocr.OcrImagePreview
 import com.chatbuddy.presentation.ocr.LiveOcrTranscript
+import com.chatbuddy.presentation.ocr.TranslatedBlockOverlay
+import com.chatbuddy.presentation.settings.PersonaEvent
 import com.chatbuddy.presentation.settings.PersonaViewModel
+import com.chatbuddy.presentation.settings.WebSettingsViewModel
 import com.chatbuddy.presentation.rag.DocumentViewModel
 import com.chatbuddy.utils.formatBytes
 import com.chatbuddy.domain.model.ChatMessage
@@ -118,10 +131,12 @@ import com.chatbuddy.domain.model.ChatCitation
 import com.chatbuddy.domain.model.ChatCitationKind
 import com.chatbuddy.domain.model.OcrResult
 import com.chatbuddy.domain.model.Persona
+import com.chatbuddy.domain.model.BuiltInPersonaCatalog
 import com.chatbuddy.domain.model.LiveTranslationPhase
 import java.util.UUID
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3WindowSizeClassApi::class)
@@ -202,7 +217,7 @@ fun ChatBuddyApp(windowSizeClass: WindowSizeClass, viewModel: HomeViewModel) {
                         modifier = contentModifier.fillMaxHeight(),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        ChatTab(state, viewModel) { folderPicker.launch(null) }
+                        ChatTab(state, viewModel, snackbarHostState) { folderPicker.launch(null) }
                     }
                 } else {
                     Column(
@@ -210,8 +225,8 @@ fun ChatBuddyApp(windowSizeClass: WindowSizeClass, viewModel: HomeViewModel) {
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         when (state.selectedTab) {
-                            HomeTab.TRANSLATE -> TranslateTab(state, viewModel)
-                            HomeTab.OCR -> OcrTab(viewModel)
+                            HomeTab.TRANSLATE -> TranslateTab(state, viewModel, snackbarHostState)
+                            HomeTab.OCR -> OcrTab(viewModel, snackbarHostState)
                             HomeTab.SETTINGS -> SettingsTab(state, viewModel) { folderPicker.launch(null) }
                             HomeTab.CHAT -> Unit
                         }
@@ -223,7 +238,12 @@ fun ChatBuddyApp(windowSizeClass: WindowSizeClass, viewModel: HomeViewModel) {
 }
 
 @Composable
-private fun ChatTab(state: HomeUiState, viewModel: HomeViewModel, chooseFolder: () -> Unit) {
+private fun ChatTab(
+    state: HomeUiState,
+    viewModel: HomeViewModel,
+    snackbarHostState: SnackbarHostState,
+    chooseFolder: () -> Unit
+) {
     val llm = state.modelStates.firstOrNull { it.artifact.id.startsWith("gemma-") }
     if (!state.storageConfigured) {
         SetupCard(onChooseFolder = chooseFolder)
@@ -235,22 +255,37 @@ private fun ChatTab(state: HomeUiState, viewModel: HomeViewModel, chooseFolder: 
         onPause = { llm?.artifact?.id?.let(viewModel::pauseModel) },
         modelName = llm?.artifact?.displayName
     ) {
-        ChatContent(state, viewModel)
+        ChatContent(state, viewModel, snackbarHostState)
     }
 }
 
 @Composable
-private fun ChatContent(state: HomeUiState, homeViewModel: HomeViewModel) {
+private fun ChatContent(
+    state: HomeUiState,
+    homeViewModel: HomeViewModel,
+    snackbarHostState: SnackbarHostState
+) {
     val viewModel = hiltViewModel<ChatViewModel>()
     val chatState by viewModel.state.collectAsStateWithLifecycleCompat()
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event -> snackbarHostState.showSnackbar(event) }
+    }
     LaunchedEffect(state.pendingChatText) {
         state.pendingChatText?.let {
             viewModel.setInput(it)
             homeViewModel.consumeChatText()
         }
     }
+    LaunchedEffect(chatState.messages.size, chatState.messages.lastOrNull()?.text, chatState.streaming) {
+        val lastItem = listState.layoutInfo.totalItemsCount - 1
+        if (lastItem >= 0) listState.animateScrollToItem(lastItem)
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
+        state = listState,
         contentPadding = PaddingValues(bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -280,7 +315,7 @@ private fun ChatContent(state: HomeUiState, homeViewModel: HomeViewModel) {
         if (chatState.activePersona == null) {
             item {
                 Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
                     shape = MaterialTheme.shapes.large,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -288,10 +323,32 @@ private fun ChatContent(state: HomeUiState, homeViewModel: HomeViewModel) {
                         modifier = Modifier.padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Choose a persona to start", style = MaterialTheme.typography.titleMedium)
-                        Text("Activate one in Settings so ChatBuddy knows how to respond.")
-                        OutlinedButton(onClick = { homeViewModel.selectTab(HomeTab.SETTINGS) }) {
-                            Text("Open settings")
+                        Text("Start with Sunny Companion", style = MaterialTheme.typography.titleMedium)
+                        Text("A cheerful, grounded persona that asks one focused question when your request needs clarification.")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = viewModel::activateDefaultPersona,
+                                enabled = !chatState.personaActionInProgress,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                if (chatState.personaActionInProgress) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.height(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Text("Use Sunny")
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = { homeViewModel.selectTab(HomeTab.SETTINGS) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Browse personas")
+                            }
                         }
                     }
                 }
@@ -300,7 +357,15 @@ private fun ChatContent(state: HomeUiState, homeViewModel: HomeViewModel) {
         item {
             ChatKnowledgeBento(chatState, viewModel)
         }
-        items(chatState.messages, key = { it.id }) { message -> ChatBubble(message) }
+        items(chatState.messages, key = { it.id }) { message ->
+            ChatBubble(
+                message = message,
+                onCopy = {
+                    clipboard.setText(AnnotatedString(message.text))
+                    scope.launch { snackbarHostState.showSnackbar("Message copied") }
+                }
+            )
+        }
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -425,11 +490,24 @@ private fun ChatKnowledgeBento(
                     )
                 }
                 Switch(
-                    checked = state.useRag,
+                    checked = state.useRag && state.ragAvailable,
                     onCheckedChange = viewModel::setUseRag,
+                    enabled = state.ragAvailable,
                     modifier = Modifier.semantics {
-                        contentDescription = "Use local document evidence"
+                        contentDescription = if (state.ragAvailable) {
+                            "Use local document evidence"
+                        } else {
+                            "Local document evidence unavailable until embedding models are ready"
+                        }
                     }
+                )
+            }
+            if (!state.ragAvailable) {
+                Text(
+                    "Download the embedding bundles in Settings to enable local documents.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 32.dp)
                 )
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -458,7 +536,7 @@ private fun ChatKnowledgeBento(
 }
 
 @Composable
-private fun ChatBubble(message: ChatMessage) {
+private fun ChatBubble(message: ChatMessage, onCopy: () -> Unit) {
     val userMessage = message.role == ChatMessage.Role.USER
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -482,6 +560,17 @@ private fun ChatBubble(message: ChatMessage) {
                     style = MaterialTheme.typography.labelLarge
                 )
                 SelectionContainer { Text(message.text) }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    IconButton(
+                        onClick = onCopy,
+                        modifier = Modifier.semantics { contentDescription = "Copy message" }
+                    ) {
+                        Icon(Icons.Outlined.ContentCopy, contentDescription = null)
+                    }
+                }
                 if (!userMessage && message.citations.isNotEmpty()) {
                     ChatSources(message.citations)
                 }
@@ -499,7 +588,12 @@ private fun ChatSources(citations: List<ChatCitation>) {
         citations.forEach { citation ->
             val uri = citation.uri
             val sourceModifier = if (citation.kind == ChatCitationKind.WEB && uri != null) {
-                Modifier.clickable { runCatching { uriHandler.openUri(uri) } }
+                Modifier
+                    .clickable { runCatching { uriHandler.openUri(uri) } }
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "Open source ${citation.title}"
+                    }
             } else {
                 Modifier
             }
@@ -524,7 +618,7 @@ private fun ChatSources(citations: List<ChatCitation>) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(citation.title, style = MaterialTheme.typography.labelLarge)
                         Text(
-                            "${citation.provider}${citation.score?.let { " · %.2f".format(it) } ?: ""}",
+                            "${citation.provider}${citation.score?.let { " · ${"%.2f".format(java.util.Locale.US, it)}" } ?: ""}",
                             style = MaterialTheme.typography.labelSmall
                         )
                         Text(
@@ -544,10 +638,15 @@ private fun ChatSources(citations: List<ChatCitation>) {
 }
 
 @Composable
-private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
+private fun TranslateTab(
+    state: HomeUiState,
+    homeViewModel: HomeViewModel,
+    snackbarHostState: SnackbarHostState
+) {
     val viewModel = hiltViewModel<TranslationViewModel>()
     val translationState by viewModel.state.collectAsStateWithLifecycleCompat()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var microphonePermissionGranted by rememberSaveable {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -593,8 +692,20 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
                         ) {
                             val clipboard = LocalClipboardManager.current
                             val context = LocalContext.current
-                            IconButton(onClick = { clipboard.setText(AnnotatedString(result.text)) }) { Icon(Icons.Outlined.ContentCopy, "Copy translation") }
-                            IconButton(onClick = { shareText(context, result.text) }) { Icon(Icons.Outlined.Share, "Share translation") }
+                            IconButton(
+                                onClick = {
+                                    clipboard.setText(AnnotatedString(result.text))
+                                    scope.launch { snackbarHostState.showSnackbar("Translation copied") }
+                                },
+                                modifier = Modifier.semantics { contentDescription = "Copy translation" }
+                            ) { Icon(Icons.Outlined.ContentCopy, null) }
+                            IconButton(
+                                onClick = {
+                                    shareText(context, result.text)
+                                    scope.launch { snackbarHostState.showSnackbar("Share sheet opened") }
+                                },
+                                modifier = Modifier.semantics { contentDescription = "Share translation" }
+                            ) { Icon(Icons.Outlined.Share, null) }
                             Spacer(modifier = Modifier.weight(1f))
                             Text(
                                 providerLabel(result.provider),
@@ -607,6 +718,47 @@ private fun TranslateTab(state: HomeUiState, homeViewModel: HomeViewModel) {
                     translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             }
+        }
+        TranslationHistoryCard(translationState, viewModel)
+    }
+}
+
+@Composable
+private fun TranslationHistoryCard(
+    state: TranslationUiState,
+    viewModel: TranslationViewModel
+) {
+    if (state.history.isEmpty() && state.historyError == null) return
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Recent translations", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                if (state.history.isNotEmpty()) {
+                    OutlinedButton(onClick = viewModel::clearHistory) { Text("Clear") }
+                }
+            }
+            state.history.take(3).forEach { entry ->
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "${entry.sourceLanguage} → ${entry.targetLanguage}",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    Text(entry.sourceText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        entry.translatedText,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            state.historyError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
     }
 }
@@ -641,7 +793,7 @@ private fun LiveTranslationCard(
                     )
                 }
                 Icon(
-                    imageVector = if (active) Icons.Outlined.Mic else Icons.Outlined.VolumeUp,
+                    imageVector = if (active) Icons.Outlined.Mic else Icons.AutoMirrored.Outlined.VolumeUp,
                     contentDescription = if (active) "Microphone active" else "Voice conversation"
                 )
             }
@@ -680,9 +832,9 @@ private fun LiveTranslationCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = if (state.voiceCapabilities?.offlineTtsReady == true) {
-                        Icons.Outlined.VolumeUp
+                        Icons.AutoMirrored.Outlined.VolumeUp
                     } else {
-                        Icons.Outlined.VolumeOff
+                        Icons.AutoMirrored.Outlined.VolumeOff
                     },
                     contentDescription = null
                 )
@@ -923,23 +1075,36 @@ private fun providerLabel(provider: TranslationProviderKind): String = when (pro
 }
 
 @Composable
-private fun OcrTab(homeViewModel: HomeViewModel) {
+private fun OcrTab(
+    homeViewModel: HomeViewModel,
+    snackbarHostState: SnackbarHostState
+) {
     val viewModel = hiltViewModel<OcrViewModel>()
     val translationViewModel = hiltViewModel<TranslationViewModel>()
     val ocrState by viewModel.state.collectAsStateWithLifecycleCompat()
     val translationState by translationViewModel.state.collectAsStateWithLifecycleCompat()
+    val cameraAnalyzer = remember { CameraOcrAnalyzer() }
     val ocrResult = ocrState.result
     val selectedImageUri = ocrState.imageUri
     val context = LocalContext.current
     var cameraError by rememberSaveable { mutableStateOf<String?>(null) }
+    var captureRequest by rememberSaveable { mutableStateOf(0L) }
     var cameraEnabled by rememberSaveable {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED
         )
     }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { viewModel.recognize(it.toString(), translationState.sourceLanguage) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    it,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            viewModel.recognize(it.toString(), translationState.sourceLanguage)
+        }
     }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         cameraEnabled = granted
@@ -968,12 +1133,35 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
         }
     }
     val clipboard = LocalClipboardManager.current
-    LaunchedEffect(translationState.sourceLanguage) {
-        viewModel.setCameraLanguage(translationState.sourceLanguage)
+    val scope = rememberCoroutineScope()
+    DisposableEffect(cameraAnalyzer, viewModel) {
+        cameraAnalyzer.setCallbacks(
+            onResult = viewModel::onCameraResult,
+            onError = viewModel::onCameraError
+        )
+        onDispose {
+            cameraAnalyzer.clearCallbacks()
+            cameraAnalyzer.close()
+        }
     }
-    LaunchedEffect(cameraEnabled, ocrState.result?.text) {
-        if (cameraEnabled) {
-            ocrState.result?.text?.takeIf(String::isNotBlank)?.let(translationViewModel::setSourceText)
+    LaunchedEffect(cameraAnalyzer, translationState.sourceLanguage, translationState.targetLanguage) {
+        cameraAnalyzer.setLanguageTag(translationState.sourceLanguage)
+        viewModel.setTranslationLanguages(
+            translationState.sourceLanguage,
+            translationState.targetLanguage
+        )
+    }
+    LaunchedEffect(
+        translationState.modelReady,
+        ocrState.result?.text,
+        ocrState.translationError
+    ) {
+        if (translationState.modelReady &&
+            ocrState.result != null &&
+            ocrState.translationError != null &&
+            ocrState.translatedBlocks.isEmpty()
+        ) {
+            viewModel.retryTranslation()
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -982,7 +1170,7 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
             BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                 if (maxWidth < 420.dp) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { picker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
+                        Button(onClick = { picker.launch(arrayOf("image/*")) }, modifier = Modifier.fillMaxWidth()) {
                             Text("Choose image")
                         }
                         CameraActionButton(
@@ -994,7 +1182,7 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
                     }
                 } else {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        Button(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f)) {
+                        Button(onClick = { picker.launch(arrayOf("image/*")) }, modifier = Modifier.weight(1f)) {
                             Text("Choose image")
                         }
                         CameraActionButton(
@@ -1012,7 +1200,11 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
         }
         if (cameraEnabled && cameraError == null) {
             CameraPreview(
-                analyzer = viewModel.cameraAnalyzer,
+                analyzer = cameraAnalyzer,
+                captureRequest = captureRequest,
+                onCapturedUri = { uri ->
+                    viewModel.recognize(uri, translationState.sourceLanguage)
+                },
                 onError = { message ->
                     cameraError = message
                     viewModel.setCameraError(message)
@@ -1026,11 +1218,18 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
                     LiveOcrTranscript(
                         result = ocrResult,
                         translationState = translationState,
+                        translatedBlocks = ocrState.translatedBlocks,
+                        translationProcessing = ocrState.translationProcessing,
+                        translationError = ocrState.translationError,
                         translationProvider = translationState.result
                             ?.takeIf { translationState.sourceText.trim() == ocrResult?.text?.trim() }
-                            ?.let { providerLabel(it.provider) },
+                            ?.let { providerLabel(it.provider) }
+                            ?: ocrState.translatedBlocks.firstOrNull()?.let {
+                                providerLabel(it.provider)
+                            },
                         onDownloadTranslation = translationViewModel::downloadLanguageModels,
                         onStopCamera = stopCamera,
+                        onCapture = { captureRequest += 1L },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .padding(8.dp)
@@ -1055,6 +1254,7 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
             OcrImagePreview(
                 uri = selectedImageUri,
                 result = ocrResult,
+                translatedBlocks = ocrState.translatedBlocks,
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(4f / 3f)
@@ -1069,7 +1269,13 @@ private fun OcrTab(homeViewModel: HomeViewModel) {
             OcrResultPanel(
                 result = result,
                 translationState = translationState,
-                onCopy = { clipboard.setText(AnnotatedString(result.text)) },
+                translatedBlocks = ocrState.translatedBlocks,
+                translationProcessing = ocrState.translationProcessing,
+                translationError = ocrState.translationError,
+                onCopy = {
+                    clipboard.setText(AnnotatedString(result.text))
+                    scope.launch { snackbarHostState.showSnackbar("OCR text copied") }
+                },
                 onSendToChat = { homeViewModel.sendToChat(result.text) },
                 onSendToTranslation = { homeViewModel.sendToTranslation(result.text) },
                 onTranslate = { translationViewModel.setSourceText(result.text) }
@@ -1119,6 +1325,9 @@ private fun OcrEmptyState() {
 private fun OcrResultPanel(
     result: OcrResult,
     translationState: TranslationUiState,
+    translatedBlocks: List<com.chatbuddy.domain.model.TranslatedBlock>,
+    translationProcessing: Boolean,
+    translationError: String?,
     onCopy: () -> Unit,
     onSendToChat: () -> Unit,
     onSendToTranslation: () -> Unit,
@@ -1140,12 +1349,19 @@ private fun OcrResultPanel(
             OutlinedButton(onClick = onTranslate, modifier = Modifier.fillMaxWidth()) {
                 Text("Translate detected text")
             }
-            if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            if (translationProcessing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            if (translatedBlocks.isNotEmpty()) {
+                Text("Image translation", style = MaterialTheme.typography.titleSmall)
+                SelectionContainer {
+                    Text(translatedBlocks.joinToString(" ") { it.translatedText })
+                }
+            }
             translationState.result?.let { translated ->
                 Text("Live translation", style = MaterialTheme.typography.titleSmall)
                 SelectionContainer { Text(translated.text) }
                 Text(providerLabel(translated.provider), style = MaterialTheme.typography.bodySmall)
             }
+            translationError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Text("${result.blocks.size} text blocks · ${result.languageTag}", style = MaterialTheme.typography.bodySmall)
         }
@@ -1159,10 +1375,12 @@ private fun SettingsTab(
     launchFolderPicker: () -> Unit
 ) {
     val personaViewModel = hiltViewModel<PersonaViewModel>()
+    val webSettingsViewModel = hiltViewModel<WebSettingsViewModel>()
     val documentViewModel = hiltViewModel<DocumentViewModel>()
     val personaState by personaViewModel.state.collectAsStateWithLifecycleCompat()
+    val webSettingsState by webSettingsViewModel.state.collectAsStateWithLifecycleCompat()
     val documentState by documentViewModel.state.collectAsStateWithLifecycleCompat()
-    var personaMessage by remember { mutableStateOf<String?>(null) }
+    var personaMessage by remember { mutableStateOf<PersonaEvent?>(null) }
     var documentMessage by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { personaViewModel.events.collect { personaMessage = it } }
     LaunchedEffect(Unit) { documentViewModel.events.collect { documentMessage = it } }
@@ -1171,9 +1389,27 @@ private fun SettingsTab(
     var prompt by rememberSaveable { mutableStateOf("") }
     var temperature by rememberSaveable { mutableStateOf(0.7f) }
     var topP by rememberSaveable { mutableStateOf(0.9f) }
-    var maxTokens by rememberSaveable { mutableStateOf("1024") }
+    var maxTokens by rememberSaveable { mutableStateOf("2048") }
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
+    var templateMenuOpen by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(personaState.editing?.id) {
+        personaState.editing?.let { persona ->
+            editingId = persona.id
+            name = persona.name
+            description = persona.description
+            prompt = persona.systemPrompt
+            temperature = persona.temperature
+            topP = persona.topP
+            maxTokens = persona.maxTokens.toString()
+        }
+    }
     val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { documentViewModel.add(it.toString()) }
+    }
+    val documentFolderPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        uri?.let { documentViewModel.addFolder(it.toString()) }
     }
     Text("Local model storage", style = MaterialTheme.typography.headlineSmall)
     if (!state.storageConfigured) {
@@ -1187,10 +1423,41 @@ private fun SettingsTab(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         state.modelStates.forEach { model ->
-            ModelCard(model, viewModel)
+            ModelCard(
+                model = model,
+                viewModel = viewModel,
+                storageConfigured = state.storageConfigured,
+                onChooseStorage = launchFolderPicker
+            )
         }
     }
+    RuntimeStatusCard(state, documentState)
+    WebProviderSettingsCard(webSettingsState, webSettingsViewModel)
     Text("AI persona", style = MaterialTheme.typography.headlineSmall)
+    Box {
+        OutlinedButton(onClick = { templateMenuOpen = true }) {
+            Text("Use a persona template")
+        }
+        DropdownMenu(
+            expanded = templateMenuOpen,
+            onDismissRequest = { templateMenuOpen = false }
+        ) {
+            BuiltInPersonaCatalog.all.forEach { template ->
+                DropdownMenuItem(
+                    text = { Text(template.name) },
+                    onClick = {
+                        name = template.name
+                        description = template.description
+                        prompt = template.systemPrompt
+                        temperature = template.temperature
+                        topP = template.topP
+                        maxTokens = template.maxTokens.toString()
+                        templateMenuOpen = false
+                    }
+                )
+            }
+        }
+    }
     OutlinedTextField(
         name,
         { name = it },
@@ -1232,11 +1499,58 @@ private fun SettingsTab(
     )
     Button(
         onClick = {
-            personaViewModel.save(Persona(UUID.randomUUID().toString(), name, description, prompt, temperature, topP, maxTokens.toIntOrNull() ?: 0))
+            personaViewModel.save(
+                Persona(
+                    id = editingId ?: UUID.randomUUID().toString(),
+                    name = name,
+                    description = description,
+                    systemPrompt = prompt,
+                    temperature = temperature,
+                    topP = topP,
+                    maxTokens = maxTokens.toIntOrNull() ?: 0,
+                    active = personaState.editing?.active == true
+                )
+            )
         },
         modifier = Modifier.fillMaxWidth()
-    ) { Text("Save persona") }
-    personaMessage?.let { Text(it, color = if (it.contains("saved", true)) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error) }
+    ) { Text(if (editingId == null) "Save persona" else "Update persona") }
+    OutlinedButton(
+        onClick = {
+            personaViewModel.saveAndActivate(
+                Persona(
+                    id = editingId ?: UUID.randomUUID().toString(),
+                    name = name,
+                    description = description,
+                    systemPrompt = prompt,
+                    temperature = temperature,
+                    topP = topP,
+                    maxTokens = maxTokens.toIntOrNull() ?: 0,
+                    active = true
+                )
+            )
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("Save and activate") }
+    if (editingId != null) {
+        OutlinedButton(
+            onClick = {
+                editingId = null
+                personaViewModel.clearEditing()
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Cancel editing") }
+    }
+    personaMessage?.let { event ->
+        Text(
+            event.message,
+            color = if (event.isError) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.tertiary
+            },
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+        )
+    }
     if (personaState.personas.isEmpty()) {
         Text("No persona saved")
     } else {
@@ -1268,6 +1582,18 @@ private fun SettingsTab(
                                 modifier = Modifier.weight(1f)
                             ) { Text("Activate persona") }
                         }
+                        IconButton(
+                            onClick = { personaViewModel.edit(persona) },
+                            modifier = Modifier.semantics { contentDescription = "Edit ${persona.name}" }
+                        ) {
+                            Icon(Icons.Outlined.Edit, contentDescription = null)
+                        }
+                        IconButton(
+                            onClick = { personaViewModel.duplicate(persona) },
+                            modifier = Modifier.semantics { contentDescription = "Duplicate ${persona.name}" }
+                        ) {
+                            Icon(Icons.Outlined.ContentCopy, contentDescription = null)
+                        }
                         IconButton(onClick = { personaViewModel.delete(persona.id) }) {
                             Icon(Icons.Outlined.Delete, "Delete ${persona.name}")
                         }
@@ -1278,8 +1604,51 @@ private fun SettingsTab(
     }
     Text("RAG documents", style = MaterialTheme.typography.headlineSmall)
     Text("TXT, PDF, and DOCX are read from SAF as bounded streams and chunked without loading a 200 MB document into memory.", style = MaterialTheme.typography.bodySmall)
-    Button(onClick = { documentPicker.launch(arrayOf("text/plain", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")) }, modifier = Modifier.fillMaxWidth()) {
-        Text("Add document")
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        if (maxWidth < 420.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        documentFolderPicker.launch(null)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Choose SAF folder") }
+                OutlinedButton(
+                    onClick = {
+                        documentPicker.launch(
+                            arrayOf(
+                                "text/plain",
+                                "application/pdf",
+                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            )
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Add one document") }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { documentFolderPicker.launch(null) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Choose SAF folder") }
+                OutlinedButton(
+                    onClick = {
+                        documentPicker.launch(
+                            arrayOf(
+                                "text/plain",
+                                "application/pdf",
+                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            )
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Add one document") }
+            }
+        }
     }
     if (documentState.processing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
     documentMessage?.let { Text(it, color = if (it == "Document indexed") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error) }
@@ -1301,15 +1670,134 @@ private fun SettingsTab(
 }
 
 @Composable
-private fun ModelCard(model: com.chatbuddy.domain.model.ModelState, viewModel: HomeViewModel) {
+private fun RuntimeStatusCard(
+    state: HomeUiState,
+    documentState: com.chatbuddy.presentation.rag.DocumentUiState
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("Runtime status", style = MaterialTheme.typography.titleMedium)
+            state.cacheStatuses.forEach { cache ->
+                val label = when (cache.state) {
+                    ModelCacheState.HIT -> "cacheDir hit"
+                    ModelCacheState.MISS -> "cacheDir miss"
+                    ModelCacheState.UNAVAILABLE -> "cache unavailable"
+                }
+                Text(
+                    "${cache.displayName}: $label",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(cache.detail, style = MaterialTheme.typography.labelSmall)
+            }
+            state.cacheError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            documentState.vectorStatus?.let { vector ->
+                Text(
+                    "Vector backend: ${vector.backend.name}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(vector.detail, style = MaterialTheme.typography.labelSmall)
+            }
+            documentState.vectorStatusError?.let {
+                Text("Vector backend: $it", color = MaterialTheme.colorScheme.error)
+            }
+            Text(
+                "CacheDir is an optional speed-up; SAF remains the durable model source.",
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+    }
+}
+
+@Composable
+private fun WebProviderSettingsCard(
+    state: com.chatbuddy.presentation.settings.WebSettingsUiState,
+    viewModel: WebSettingsViewModel
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Optional web search", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Wikipedia is available without a key. An optional Brave Search key enables broader official web results. Only your query is sent.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            OutlinedTextField(
+                value = state.apiKeyInput,
+                onValueChange = viewModel::setApiKey,
+                label = { Text("Brave Search API key") },
+                placeholder = { Text("Stored encrypted on this device") },
+                singleLine = true,
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Brave Search API key" },
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(onClick = viewModel::save, enabled = !state.busy && state.apiKeyInput.isNotBlank()) {
+                    Text("Save key")
+                }
+                if (state.braveApiKeyConfigured) {
+                    OutlinedButton(onClick = viewModel::clear, enabled = !state.busy) {
+                        Text("Remove key")
+                    }
+                }
+            }
+            when {
+                state.busy -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                state.message != null -> Text(state.message, color = MaterialTheme.colorScheme.secondary)
+                state.error != null -> Text(state.error, color = MaterialTheme.colorScheme.error)
+                state.braveApiKeyConfigured -> Text(
+                    "Brave Search key configured",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelCard(
+    model: com.chatbuddy.domain.model.ModelState,
+    viewModel: HomeViewModel,
+    storageConfigured: Boolean,
+    onChooseStorage: () -> Unit
+) {
     val status = model.status
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(model.artifact.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("${formatBytes(model.artifact.sizeBytes)} · ${model.artifact.license}", style = MaterialTheme.typography.bodySmall)
-            when (status) {
+            if (!storageConfigured && status !is ModelStatus.Ready) {
+                Text(
+                    "Reconnect a writable SAF folder before downloading this bundle.",
+                    color = MaterialTheme.colorScheme.error
+                )
+                OutlinedButton(
+                    onClick = onChooseStorage,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Reconnect SAF folder") }
+            } else when (status) {
                 is ModelStatus.Queued -> {
-                    Text("Download queued · resumes automatically")
+                    Text(
+                        if (status.downloadedBytes > 0L) {
+                            "${formatBytes(status.downloadedBytes)} downloaded · waiting for network"
+                        } else {
+                            "Download queued · resumes automatically"
+                        }
+                    )
                     OutlinedButton(
                         onClick = { viewModel.pauseModel(model.artifact.id) },
                         modifier = Modifier.fillMaxWidth()

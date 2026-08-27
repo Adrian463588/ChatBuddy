@@ -4,6 +4,7 @@ import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.WebEvidence
 import com.chatbuddy.domain.repository.WebSearchRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -19,6 +20,10 @@ class MediaWikiWebSearchRepository @Inject constructor(
     private val client: OkHttpClient
 ) : WebSearchRepository {
     private val json = Json { ignoreUnknownKeys = true }
+    private val webClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
 
     override suspend fun search(query: String, limit: Int): AppResult<List<WebEvidence>> =
         withContext(Dispatchers.IO) {
@@ -38,22 +43,26 @@ class MediaWikiWebSearchRepository @Inject constructor(
                 .build()
 
             try {
-                client.newCall(request).execute().use { response ->
+                webClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
                         return@withContext AppResult.Error(
                             "Web search failed with HTTP ${response.code}"
                         )
                     }
-                    val body = response.body
-                        ?: return@withContext AppResult.Error("Web search returned no data")
-                    if (body.contentLength() > MAX_RESPONSE_BYTES) {
-                        return@withContext AppResult.Error("Web search response is too large")
+                    val contentType = response.header("Content-Type").orEmpty()
+                    if (!contentType.lowercase().startsWith("application/json")) {
+                        return@withContext AppResult.Error("Web search returned an unexpected content type")
                     }
-                    val payload = json.decodeFromString<MediaWikiResponse>(body.string())
+                    val payload = json.decodeFromString<MediaWikiResponse>(
+                        response.readBoundedBody(MAX_RESPONSE_BYTES)
+                    )
+                    val retrievedAt = System.currentTimeMillis()
                     val evidence = payload.query?.pages.orEmpty().mapNotNull { page ->
                         val content = page.extract?.trim().orEmpty()
                         val url = page.fullUrl?.trim().orEmpty()
-                        if (page.title.isBlank() || content.isBlank() || !url.isTrustedWikipediaUrl()) {
+                        if (page.pageId == null || page.title.isBlank() || content.isBlank() ||
+                            !url.isTrustedWikipediaUrl()
+                        ) {
                             null
                         } else {
                             WebEvidence(
@@ -61,12 +70,16 @@ class MediaWikiWebSearchRepository @Inject constructor(
                                 url = url,
                                 excerpt = content.replace(WHITESPACE, " ").take(EXCERPT_LENGTH),
                                 content = content.take(CONTENT_LENGTH),
-                                provider = PROVIDER
+                                provider = PROVIDER,
+                                sourceId = "$SOURCE_PREFIX${page.pageId}",
+                                retrievedAtEpochMs = retrievedAt
                             )
                         }
                     }
                     AppResult.Success(evidence)
                 }
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 AppResult.Error("Web search could not be completed", error)
             }
@@ -88,7 +101,10 @@ class MediaWikiWebSearchRepository @Inject constructor(
 
     private fun String.isTrustedWikipediaUrl(): Boolean {
         val url = toHttpUrlOrNull() ?: return false
-        return url.scheme == "https" && url.host == "en.wikipedia.org"
+        return url.scheme == "https" &&
+            url.host == "en.wikipedia.org" &&
+            url.username.isEmpty() &&
+            url.password.isEmpty()
     }
 
     @Serializable
@@ -105,15 +121,19 @@ class MediaWikiWebSearchRepository @Inject constructor(
     private data class SearchPage(
         val title: String = "",
         val extract: String? = null,
-        val fullurl: String? = null
+        val fullurl: String? = null,
+        val pageid: Long? = null
     ) {
         val fullUrl: String?
             get() = fullurl
+        val pageId: Long?
+            get() = pageid
     }
 
     companion object {
         private const val BASE_URL = "https://en.wikipedia.org/w/api.php"
         private const val PROVIDER = "Wikipedia"
+        private const val SOURCE_PREFIX = "wikipedia:"
         private const val USER_AGENT =
             "ChatBuddy/0.1 (https://github.com/Adrian463588/ChatBuddy)"
         private const val MIN_QUERY_LENGTH = 2

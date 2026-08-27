@@ -13,7 +13,8 @@ data class ChatRequest(
     val text: String,
     val persona: Persona,
     val useRag: Boolean,
-    val allowWebFallback: Boolean = false
+    val allowWebFallback: Boolean = false,
+    val history: List<ChatMessage> = emptyList()
 )
 
 enum class ChatCitationKind {
@@ -27,7 +28,9 @@ data class ChatCitation(
     val uri: String?,
     val excerpt: String,
     val provider: String,
-    val score: Float? = null
+    val score: Float? = null,
+    val sourceId: String = "",
+    val retrievedAtEpochMs: Long = 0L
 )
 
 sealed interface ChatStreamEvent {

@@ -2,7 +2,7 @@
 
 **Version:** 1.0  
 **Status:** Draft  
-**Last Updated:** 2026-08-19  
+**Last Updated:** 2026-08-27
 **Platform:** Android (minSdk 26 / targetSdk 35)  
 **Package:** `com.chatbuddy`
 
@@ -130,7 +130,8 @@ Pengguna dapat mengustomisasi kepribadian AI dengan system prompt, temperature, 
 
 **Acceptance Criteria:**
 
-- [ ] Template bawaan: Helpful Assistant, Code Expert, Translator, Teacher, Custom
+- [ ] Template bawaan: Sunny Companion, Study Buddy, Practical Guide, Translation Helper
+- [ ] Template bawaan memiliki aturan probing terbatas: satu pertanyaan klarifikasi yang fokus hanya ketika ambiguitas memengaruhi jawaban
 - [ ] Edit system prompt bebas (textarea)
 - [ ] Slider temperature (0.1 - 1.0, default 0.7)
 - [ ] Slider top-p (0.5 - 1.0, default 0.9)
@@ -151,7 +152,7 @@ Pengguna mengunduh LLM GGUF, embedding model ONNX, dan bundle lainnya via UI dow
 **Acceptance Criteria:**
 
 - [ ] UI download screen dengan daftar bundle yang tersedia:
-  - LLM: Gemma 3 2B (GGUF, ~2.3 GB)
+  - LLM: Gemma 4 E2B IT Q4_0 (GGUF, 2.84 GB; pinned verified artifact)
   - Embedding: MiniLM-L6-v2 INT8 (ONNX, ~23 MB)
   - OCR bundle (ML Kit, bundled)
   - Translation pack per bahasa (ML Kit, download on demand)
@@ -304,13 +305,13 @@ app/src/main/java/com/chatbuddy/
 | Phase | Scope | Status |
 |-------|-------|--------|
 | Phase 1 | Project setup, dependencies, SAF storage, download manager | Implemented; model download/persistence device gate pending |
-| Phase 2 | RAG pipeline: chunking, embedding, vector search | Chunking/embedding implemented; sqlite-vec runtime gate pending |
+| Phase 2 | RAG pipeline: chunking, embedding, vector search | Chunking/embedding and sqlite-vec probe plus bounded Room exact fallback implemented; artifact/device retrieval pending |
 | Phase 3 | LLM inference (llama.cpp JNI) + streaming chat UI | JNI build and streaming boundary implemented; Gemma device inference pending |
-| Phase 4 | Translation engine + realtime translation screen | ML Kit managed provider implemented; model-pack and offline fallback pending |
-| Phase 5 | OCR engine + camera integration | ML Kit/CameraX implementation present; device model/camera session pending |
-| Phase 6 | Image translation pipeline (OCR + Translate overlay) | OCR-to-translation handoff implemented; translated overlay pending |
+| Phase 4 | Translation engine + realtime translation screen | ML Kit managed provider and one-device voice pipeline implemented; provider-pack/audio device acceptance pending |
+| Phase 5 | OCR engine + camera integration | ML Kit/CameraX implementation present; camera/gallery model/session acceptance pending |
+| Phase 6 | Image translation pipeline (OCR + Translate overlay) | OCR-to-translation handoff and bounding-box overlay implemented; device acceptance pending |
 | Phase 7 | Persona settings UI | Implemented with Room persistence and validation |
-| Phase 8 | Polish, testing, ProGuard, release | Debug/unit/lint/native/device gates pass; production signing and runtime acceptance pending |
+| Phase 8 | Polish, testing, ProGuard, release | Debug/unit/lint/native gates pass; final device/model and production-signing acceptance pending |
 
 ---
 
@@ -424,3 +425,49 @@ RAG paper and Android's repository/network guidance:
 - https://mlanthology.org/neurips/2020/lewis2020neurips-retrievalaugmented/
 - https://developer.android.com/develop/connectivity/network-ops/connecting
 - https://www.mediawiki.org/wiki/API:Search/en
+
+### 10.3 Audit and hardening amendment — 2026-08-27
+
+- Model downloads use one unique WorkManager job per artifact, a SAF `.tmp`
+  file, the provider's durable byte length, HTTP Range validation, early-EOF
+  retry, manifest size/SHA-256 verification, and atomic rename. A `200`
+  response during resume safely restarts from byte zero; it is never appended
+  to a partial file.
+- `cacheDir` is an optional verified runtime copy keyed by artifact revision,
+  size, and SHA-256. A cache miss, insufficient space, or cache I/O failure
+  falls back to the verified SAF source; cache state is not confused with
+  durable model storage.
+- The vector backend reports the backend actually serving queries:
+  `SQLITE_VEC`, `ROOM_EXACT_DEGRADED`, or `UNAVAILABLE`. Room embedding BLOBs
+  remain the compatibility source and are reconciled into sqlite-vec after a
+  process interruption.
+- OCR camera analysis owns CameraX lifecycle and uses `KEEP_ONLY_LATEST`.
+  EXIF orientation is applied to both source dimensions and preview pixels so
+  bounding boxes and translated blocks use the same coordinate space.
+- The keyless web boundary is the official Wikipedia MediaWiki API. It is
+  opt-in, HTTPS-only, bounded, redirect-disabled, provenance-bound, and does
+  not replace the local LLM. Unverified runtime/device gates remain pending;
+  no result is fabricated to satisfy them.
+
+### 10.4 Built-in AI companion persona amendment — 2026-08-27
+
+F-05 now ships four usable templates: `Sunny Companion`, `Study Buddy`,
+`Practical Guide`, and `Translation Helper`. `Sunny Companion` is the
+first-run recommendation: warm and cheerful, but still professional and
+grounded. The template action persists and activates the persona in one
+transaction, so the user can start without authoring a system prompt.
+
+- Every bundled template has a structured mission, grounding, probing, and
+  response-style prompt.
+- Custom personas receive the same global grounding and probing policy at the
+  local LLM boundary. The assistant asks at most one focused clarification
+  only when a missing detail materially changes the answer; low-risk ambiguity
+  becomes an explicit assumption and continuation.
+- Invalid activation/deletion reports an actionable error without silently
+  clearing the current active persona. Success and error feedback are separate
+  UI event states.
+- Prompt behavior is informed by Google's persona/constraint/system-instruction
+  guidance and Microsoft's targeted intent-disambiguation guidance:
+  - https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/prompt-design-strategies
+  - https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/system-instruction-introduction
+  - https://learn.microsoft.com/en-us/microsoft-copilot-studio/guidance/cux-disambiguate-intent

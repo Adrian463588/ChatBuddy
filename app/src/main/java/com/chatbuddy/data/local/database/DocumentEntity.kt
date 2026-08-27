@@ -13,7 +13,8 @@ data class DocumentEntity(
     val mimeType: String,
     val sourceUri: String,
     val chunkCount: Int,
-    val indexed: Boolean
+    val indexed: Boolean,
+    val lastModifiedEpochMs: Long = 0L
 )
 
 @Entity(tableName = "document_chunks")

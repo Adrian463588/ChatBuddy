@@ -10,7 +10,7 @@ Every downloadable artifact has a pinned URL/revision, byte size, SHA-256, licen
 
 ## ADR-003 — sqlite-vec is preferred with a real embedding compatibility path
 
-The repository targets the sqlite-vec virtual table contract and 384-dimensional vectors. Android SQLite does not automatically expose the extension, so the repository attempts sqlite-vec first and stores the same real embeddings in a Room BLOB column when the extension is unavailable. The compatibility path ranks those vectors with exact cosine similarity and loads the winning chunk records; it never invents evidence. A future licensed, ABI-tested sqlite-vec extension remains the preferred backend.
+The repository targets the sqlite-vec virtual table contract and 384-dimensional vectors. Android SQLite does not automatically expose the extension, so the repository attempts sqlite-vec first and stores the same real embeddings in a Room BLOB column when the extension is unavailable. The compatibility path ranks those vectors with exact cosine similarity and loads the winning chunk records; it never invents evidence. The app builds the pinned sqlite-vec extension for Android and reports `ROOM_EXACT_DEGRADED` when probing or querying that extension fails. Raw vector SQL uses Room 2.7's `useWriterConnection`/`useReaderConnection` APIs, which are compatible with `BundledSQLiteDriver`; it does not assume a `SupportSQLiteOpenHelper` exists when a driver is configured. Missing external rows are reconciled from the Room BLOB owner after a process interruption.
 
 ## ADR-004 — llama.cpp JNI owns one serialized session
 
@@ -18,11 +18,11 @@ The JNI wrapper loads GGUF through a duplicated SAF file descriptor, uses the mo
 
 ## ADR-005 — ML Kit is explicitly managed by Play Services
 
-Translation and OCR use real ML Kit APIs. Translation model availability and provenance are surfaced as managed state. The app does not mislabel Play Services files as SAF-persistent artifacts after uninstall. An OPUS-MT ONNX fallback is a separate future provider and is not represented as ready today.
+Translation and OCR use real ML Kit APIs. Translation model availability and provenance are surfaced as managed state. The app does not mislabel Play Services files as SAF-persistent artifacts after uninstall. An OPUS-MT ONNX fallback remains a separate provider contract and is `UNAVAILABLE` until a licensed artifact, tokenizer, checksum, and runtime are verified; no fallback output is fabricated.
 
 ## ADR-006 — voice is turn-taking until Whisper JNI is proven
 
-Audio capture uses `AudioRecord` at 16 kHz and Android TTS only when offline capability is reported. Whisper artifact metadata and the repository contract exist, but no transcript is emitted until whisper.cpp JNI is built and device-tested. Bluetooth multi-device conversation is outside v1.
+Audio capture uses `AudioRecord` at 16 kHz and Android TTS only when offline capability is reported. Whisper.cpp JNI is built from a pinned revision, but no transcript is emitted until its SAF artifact and device session are verified. Bluetooth multi-device conversation is outside v1.
 
 ## ADR-007 — reference projects are patterns only
 
@@ -77,3 +77,23 @@ References:
 - https://mlanthology.org/neurips/2020/lewis2020neurips-retrievalaugmented/
 - https://developer.android.com/develop/connectivity/network-ops/connecting
 - https://www.mediawiki.org/wiki/API:Search/en
+
+## ADR-013 — bundled personas use structured, bounded probing
+
+ChatBuddy ships small, deterministic persona templates so a first-time user can
+start with `Sunny Companion` without writing a system prompt. Templates are
+configuration only and are copied to Room after an explicit user action. The
+default persona is warm and cheerful, but its prompt keeps the behavior grounded:
+it asks at most one focused clarification when a missing detail materially changes
+the answer, states a low-risk assumption when possible, and never invents facts,
+citations, actions, or hidden reasoning. Users can still edit, duplicate, activate,
+or delete the persisted persona.
+
+The prompt is structured into mission, grounding, probing, and response style so
+the local model receives an explicit objective, constraints, context boundary, and
+output style. This follows Google's prompt-design guidance on persona, constraints,
+context, and structured prompts, and Microsoft's guidance to use targeted
+disambiguation questions for ambiguous intent:
+
+- https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/prompt-design-strategies
+- https://learn.microsoft.com/en-us/microsoft-copilot-studio/guidance/cux-disambiguate-intent

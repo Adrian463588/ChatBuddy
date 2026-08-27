@@ -5,6 +5,8 @@ import android.os.StatFs
 import androidx.documentfile.provider.DocumentFile
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.ModelArtifact
+import com.chatbuddy.domain.model.ModelCacheState
+import com.chatbuddy.domain.model.ModelCacheStatus
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -31,12 +33,58 @@ class ModelRuntimeCache @Inject constructor(
     @ApplicationContext private val context: Context,
     private val safModelStore: SafModelStore
 ) {
+    fun inspect(artifact: ModelArtifact): ModelCacheStatus {
+        if (artifact.storageKind != com.chatbuddy.domain.model.ModelStorageKind.SAF_PERSISTENT) {
+            return ModelCacheStatus(
+                artifactId = artifact.id,
+                displayName = artifact.displayName,
+                state = ModelCacheState.UNAVAILABLE,
+                detail = "Cache is only used for SAF-persistent artifacts"
+            )
+        }
+        val expectedSha = artifact.sha256.trim().lowercase(Locale.US)
+        if (artifact.sizeBytes <= 0L || !SHA256_PATTERN.matches(expectedSha)) {
+            return ModelCacheStatus(
+                artifactId = artifact.id,
+                displayName = artifact.displayName,
+                state = ModelCacheState.UNAVAILABLE,
+                detail = "Manifest fingerprint is invalid"
+            )
+        }
+        val directory = File(context.cacheDir, CACHE_DIRECTORY)
+        val extension = extensionFor(safModelStore.fileName(artifact))
+        val cacheFile = File(directory, "$expectedSha.$extension")
+        val metadataFile = File(directory, "$expectedSha.meta")
+        val valid = isValid(
+            cacheFile = cacheFile,
+            metadataFile = metadataFile,
+            artifact = artifact,
+            expectedMetadata = metadataFor(artifact, expectedSha)
+        )
+        return ModelCacheStatus(
+            artifactId = artifact.id,
+            displayName = artifact.displayName,
+            state = if (valid) ModelCacheState.HIT else ModelCacheState.MISS,
+            detail = if (valid) {
+                "Verified model copy is available in cacheDir"
+            } else {
+                "Cache will be rebuilt from the verified SAF file when the runtime loads"
+            }
+        )
+    }
+
+    /**
+     * Materializes a verified SAF file into app-private cacheDir when possible.
+     * A null payload is an intentional cache miss: callers must continue with
+     * the verified SAF descriptor/stream. Cache pressure or provider failure is
+     * never allowed to delete or replace the durable SAF source.
+     */
     suspend fun prepare(
         artifact: ModelArtifact,
         source: DocumentFile
     ): AppResult<CachedModelFile?> = withContext(Dispatchers.IO) {
         AppResult.Success(runCatching { prepareBlocking(artifact, source) }
-            .getOrDefault(null))
+            .getOrNull())
     }
 
     private fun prepareBlocking(
@@ -50,7 +98,8 @@ class ModelRuntimeCache @Inject constructor(
         val directory = File(context.cacheDir, CACHE_DIRECTORY)
         if (!directory.isDirectory && !directory.mkdirs()) return null
 
-        val cacheFile = File(directory, "$expectedSha.gguf")
+        val extension = extensionFor(safModelStore.fileName(artifact))
+        val cacheFile = File(directory, "$expectedSha.$extension")
         val metadataFile = File(directory, "$expectedSha.meta")
         val metadata = metadataFor(artifact, expectedSha)
         if (isValid(cacheFile, metadataFile, artifact, metadata)) {
@@ -63,7 +112,7 @@ class ModelRuntimeCache @Inject constructor(
         val requiredBytes = artifact.sizeBytes + COPY_RESERVE_BYTES
         if (StatFs(directory.path).availableBytes < requiredBytes) return null
 
-        val tempFile = File(directory, "$expectedSha.gguf.tmp")
+        val tempFile = File(directory, "$expectedSha.$extension.tmp")
         val tempMetadataFile = File(directory, "$expectedSha.meta.tmp")
         tempFile.delete()
         tempMetadataFile.delete()
@@ -152,11 +201,21 @@ class ModelRuntimeCache @Inject constructor(
     }
 
     private fun metadataFor(artifact: ModelArtifact, expectedSha: String): String = buildString {
-        append("version=1\n")
+        append("version=2\n")
+        append("artifact=").append(artifact.id).append('\n')
         append("size=").append(artifact.sizeBytes).append('\n')
         append("sha256=").append(expectedSha).append('\n')
         append("revision=").append(artifact.revision).append('\n')
+        append("file=").append(safModelStore.fileName(artifact)).append('\n')
     }
+
+    private fun extensionFor(fileName: String): String = fileName
+        .substringAfterLast('.', missingDelimiterValue = "bin")
+        .lowercase(Locale.US)
+        .replace(Regex("[^a-z0-9]"), "")
+        .take(12)
+        .takeIf { it.isNotBlank() }
+        ?: "bin"
 
     private fun ByteArray.toHex(): String = buildString(size * 2) {
         for (value in this@toHex) {

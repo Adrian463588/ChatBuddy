@@ -49,6 +49,21 @@ Package utama mengikuti MVVM dan Clean Architecture:
 - `presentation/` berisi screen state, ViewModel, ModelGate, dan Compose UI.
 - `architecture/` berisi traceability dan ADR; `docs/` adalah reference checkout yang sengaja tidak diikutkan Git.
 
+## Persona templates
+
+ChatBuddy menyediakan `Sunny Companion` sebagai persona bawaan yang periang dan
+langsung bisa diaktifkan dari layar ChatBuddy. `Study Buddy`, `Practical Guide`,
+dan `Translation Helper` tersedia sebagai template tambahan. Setiap template
+memakai prompt terstruktur dengan batas probing: satu pertanyaan klarifikasi
+yang fokus hanya ketika detail yang hilang benar-benar mengubah jawaban; untuk
+ambiguitas berisiko rendah, asisten menyatakan asumsi lalu melanjutkan.
+Persona custom menerima policy grounding/probing yang sama. Semua persona tetap
+lokal dan dapat diedit, diduplikasi, diaktifkan, atau dihapus.
+
+Desain perilaku ini mengikuti [Google prompt design strategies](https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/prompt-design-strategies),
+[Google system instructions](https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/system-instruction-introduction),
+dan [Microsoft disambiguation guidance](https://learn.microsoft.com/en-us/microsoft-copilot-studio/guidance/cux-disambiguate-intent).
+
 ## Model manifest
 
 `app/src/main/assets/model-manifest.json` adalah source of truth artifact. Setiap entry memuat URL yang dipin revision, ukuran, SHA-256, lisensi, ABI, dan storage kind.
@@ -122,6 +137,21 @@ Evidence ini membuktikan build, UI shell, navigation, dan launch; tidak membukti
 - `:app:kspDebugKotlin`, `:app:compileDebugKotlin`, dan `:app:testDebugUnitTest` — pass after local-first web fallback and bento chat changes.
 - Regression tests cover local evidence priority, web fallback only after a local miss and explicit opt-in, and answer withholding when opt-in is disabled.
 - `:app:lintDebug`, `:app:assembleDebug`, and device smoke for this change remain pending until the final validation run; no runtime model or live web session is claimed from compilation alone.
+
+### Evidence captured — 2026-08-27
+
+- `:app:compileDebugKotlin` — pass.
+- `:app:testDebugUnitTest` — pass, 40 tests.
+- `:app:connectedDebugAndroidTest` — pass, 17/17 tests pada Samsung `SM-G988B`, Android 13.
+- `:app:lintDebug` — pass tanpa error; warning dependency/deprecation yang tersisa tetap perlu direkonsiliasi sebelum release.
+- `:app:externalNativeBuildDebug` — pass untuk `arm64-v8a` dan `armeabi-v7a`.
+- `:app:assembleDebug` — pass; APK debug dipasang dengan `adb install -r` dan `com.chatbuddy/.MainActivity` berhasil diluncurkan.
+- Accessibility/UI smoke mengonfirmasi state SAF yang actionable: ketika folder writable belum tersedia, UI menampilkan `Reconnect SAF folder`, bukan toast tanpa arti atau download palsu.
+- Device Settings smoke mengonfirmasi akses Room driver yang benar dan status backend yang jujur: `ROOM_EXACT_DEGRADED` ketika extension sqlite-vec tidak tersedia, tanpa mengklaim `SQLITE_VEC`; `cacheDir miss` tetap menjelaskan fallback ke file SAF terverifikasi.
+- Persona smoke code path memiliki template `Sunny Companion` dan policy probing/grounding global untuk persona custom; activation failure dan success feedback dipisahkan secara eksplisit.
+- `preview/chatbuddy-device.png` dan `preview/chatbuddy-translate-device.png` diperbarui dari screenshot APK ChatBuddy yang benar-benar berjalan di device; preview bukan mock UI.
+
+Gate berikut masih `BLOCKED/PENDING` karena belum ada sesi artifact nyata yang selesai pada device ini: pemilihan folder SAF writable, download dan checksum Gemma/MiniLM/Whisper, process-kill/resume, chat RAG offline, sqlite-vec retrieval, web fallback live dengan citation, OCR kamera/gallery, live Whisper/TTS, ingest 200 MB, serta uninstall/reinstall persistence. Build atau instrumentation pass tidak digunakan sebagai pengganti evidence runtime tersebut.
 
 ## License/provenance
 

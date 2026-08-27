@@ -15,11 +15,9 @@ import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.inject.Inject
-import javax.inject.Singleton
 
-@Singleton
-class CameraOcrAnalyzer @Inject constructor() : ImageAnalysis.Analyzer {
+/** CameraX/ML Kit adapter owned by the camera screen, not by a ViewModel. */
+class CameraOcrAnalyzer : ImageAnalysis.Analyzer {
     private val lock = Any()
     private val recognizers = mutableMapOf<RecognizerKind, TextRecognizer>()
     private val frameInFlight = AtomicBoolean(false)
@@ -164,16 +162,16 @@ class CameraOcrAnalyzer @Inject constructor() : ImageAnalysis.Analyzer {
     }
 
     private fun deliver(session: AnalysisSession, callback: () -> Unit) {
-        synchronized(lock) {
-            if (!closed && session.generation == generation) callback()
+        val shouldDeliver = synchronized(lock) {
+            !closed && session.generation == generation
         }
+        if (shouldDeliver) callback()
     }
 
     private fun deliverError(session: AnalysisSession?, message: String) {
         if (session == null) {
-            synchronized(lock) {
-                if (!closed) onError(message)
-            }
+            val callback = synchronized(lock) { if (!closed) onError else null }
+            callback?.invoke(message)
         } else {
             deliver(session) { onError(message) }
         }

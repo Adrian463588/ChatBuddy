@@ -12,10 +12,22 @@ class ModelManifestDataSource @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = false }
 
-    fun read(): List<com.chatbuddy.domain.model.ModelArtifact> = context.assets
-        .open("model-manifest.json")
-        .bufferedReader()
-        .use { reader -> json.decodeFromString<ModelManifestDto>(reader.readText()) }
-        .artifacts
-        .map(ModelArtifactDto::toDomain)
+    fun read(): List<com.chatbuddy.domain.model.ModelArtifact> {
+        val manifest = context.assets
+            .open("model-manifest.json")
+            .bufferedReader()
+            .use { reader -> json.decodeFromString<ModelManifestDto>(reader.readText()) }
+        require(manifest.schemaVersion == SUPPORTED_SCHEMA_VERSION) {
+            "Unsupported model manifest schema ${manifest.schemaVersion}"
+        }
+        val artifacts = manifest.artifacts.map(ModelArtifactDto::toDomain)
+        require(artifacts.map { it.id }.toSet().size == artifacts.size) {
+            "Model manifest contains duplicate artifact ids"
+        }
+        return artifacts
+    }
+
+    companion object {
+        private const val SUPPORTED_SCHEMA_VERSION = 1
+    }
 }

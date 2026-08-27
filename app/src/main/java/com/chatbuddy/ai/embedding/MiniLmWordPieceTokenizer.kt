@@ -7,25 +7,71 @@ data class MiniLmEncodedInput(
     val inputIds: LongArray,
     val attentionMask: LongArray,
     val tokenTypeIds: LongArray
-)
+) {
+    val activeTokenCount: Int
+        get() = attentionMask.count { it == 1L }
+}
 
 class MiniLmWordPieceTokenizer private constructor(
     private val vocabulary: Map<String, Int>
 ) {
-    fun encode(text: String, maxLength: Int = 256): MiniLmEncodedInput {
-        require(maxLength >= 3) { "maxLength must allow special tokens" }
-        val tokens = mutableListOf<Int>()
-        tokens += vocabulary.getValue("[CLS]")
-        BASIC_TOKEN_PATTERN.findAll(text.lowercase(Locale.US)).forEach { match ->
-            if (tokens.size >= maxLength - 1) return@forEach
-            tokens += wordPiece(match.value)
-                .take(maxLength - 1 - tokens.size)
+    /**
+     * Encodes only inputs that fit in one model window. Call [encodeWindows]
+     * for document chunks; it never drops the tail of the input.
+     */
+    fun encode(text: String, maxLength: Int = DEFAULT_MAX_LENGTH): MiniLmEncodedInput {
+        val windows = encodeWindows(text, maxLength).toList()
+        require(windows.size == 1) {
+            "Input exceeds one MiniLM window; use encodeWindows for long text"
         }
-        tokens += vocabulary.getValue("[SEP]")
-        val ids = LongArray(maxLength)
+        return windows.single()
+    }
+
+    /**
+     * Splits WordPiece ids at model payload boundaries. Every window gets its
+     * own special tokens and padding, making the result deterministic and
+     * lossless with respect to the tokenizer output.
+     */
+    fun encodeWindows(
+        text: String,
+        maxLength: Int = DEFAULT_MAX_LENGTH
+    ): Sequence<MiniLmEncodedInput> {
+        require(maxLength >= 3) { "maxLength must allow special tokens" }
+        val wordPieceIds = tokenize(text)
+        val payloadSize = maxLength - SPECIAL_TOKEN_COUNT
+        return sequence {
+            if (wordPieceIds.isEmpty()) {
+                yield(encodeWindow(emptyList(), maxLength))
+            } else {
+                var start = 0
+                while (start < wordPieceIds.size) {
+                    val end = (start + payloadSize).coerceAtMost(wordPieceIds.size)
+                    yield(encodeWindow(wordPieceIds.subList(start, end), maxLength))
+                    start = end
+                }
+            }
+        }
+    }
+
+    private fun tokenize(text: String): List<Int> = buildList {
+        BASIC_TOKEN_PATTERN.findAll(text.lowercase(Locale.US)).forEach { match ->
+            addAll(wordPiece(match.value))
+        }
+    }
+
+    private fun encodeWindow(payload: List<Int>, maxLength: Int): MiniLmEncodedInput {
+        val ids = LongArray(maxLength) { vocabulary["[PAD]"].orZero().toLong() }
         val mask = LongArray(maxLength)
         val types = LongArray(maxLength)
-        tokens.forEachIndexed { index, id -> ids[index] = id.toLong(); mask[index] = 1L }
+        var index = 0
+        ids[index] = vocabulary.getValue("[CLS]").toLong()
+        mask[index++] = 1L
+        payload.forEach { tokenId ->
+            ids[index] = tokenId.toLong()
+            mask[index++] = 1L
+        }
+        ids[index] = vocabulary.getValue("[SEP]").toLong()
+        mask[index] = 1L
         return MiniLmEncodedInput(ids, mask, types)
     }
 
@@ -54,7 +100,11 @@ class MiniLmWordPieceTokenizer private constructor(
 
     private val unknownId: Int get() = vocabulary["[UNK]"] ?: 100
 
+    private fun Int?.orZero(): Int = this ?: 0
+
     companion object {
+        const val DEFAULT_MAX_LENGTH = 256
+        private const val SPECIAL_TOKEN_COUNT = 2
         private const val MAX_WORD_LENGTH = 100
         private val BASIC_TOKEN_PATTERN = Regex("\\p{L}+|\\p{N}+|[^\\p{L}\\p{N}\\s]")
 

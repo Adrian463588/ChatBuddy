@@ -2,6 +2,8 @@ package com.chatbuddy.presentation.ocr
 
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -13,6 +15,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
@@ -20,15 +24,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.io.File
+import java.util.UUID
 
 @Composable
 fun CameraPreview(
     analyzer: ImageAnalysis.Analyzer,
     onError: (String) -> Unit,
     onReady: () -> Unit = {},
+    captureRequest: Long = 0L,
+    onCapturedUri: (String) -> Unit = {},
     overlay: @Composable BoxScope.() -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -42,12 +51,53 @@ fun CameraPreview(
     }
     val currentOnError = rememberUpdatedState(onError)
     val currentOnReady = rememberUpdatedState(onReady)
+    val currentOnCapturedUri = rememberUpdatedState(onCapturedUri)
+    val imageCaptureRef = remember { mutableStateOf<ImageCapture?>(null) }
+
+    LaunchedEffect(captureRequest) {
+        if (captureRequest == 0L) return@LaunchedEffect
+        val imageCapture = imageCaptureRef.value
+        if (imageCapture == null) {
+            currentOnError.value("Camera capture is not ready yet.")
+            return@LaunchedEffect
+        }
+        val directory = File(context.cacheDir, OCR_CAPTURE_DIRECTORY)
+        if (!directory.isDirectory && !directory.mkdirs()) {
+            currentOnError.value("Temporary image storage is unavailable.")
+            return@LaunchedEffect
+        }
+        val file = File(directory, "capture-${UUID.randomUUID()}.jpg")
+        val options = ImageCapture.OutputFileOptions.Builder(file).build()
+        imageCapture.takePicture(
+            options,
+            ContextCompat.getMainExecutor(context),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                    currentOnCapturedUri.value(
+                        FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            file
+                        ).toString()
+                    )
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    currentOnError.value(
+                        exception.message?.takeIf(String::isNotBlank)
+                            ?: "Camera capture failed."
+                    )
+                }
+            }
+        )
+    }
 
     DisposableEffect(lifecycleOwner, previewView, analyzer) {
         var disposed = false
         var provider: ProcessCameraProvider? = null
         var previewUseCase: Preview? = null
         var analysisUseCase: ImageAnalysis? = null
+        var imageCaptureUseCase: ImageCapture? = null
         val mainExecutor = ContextCompat.getMainExecutor(context)
         val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "chatbuddy-camera-analysis").apply { isDaemon = true }
@@ -59,9 +109,11 @@ fun CameraPreview(
             val cameraProvider = provider
             val preview = previewUseCase
             val analysis = analysisUseCase
-            if (cameraProvider != null && (preview != null || analysis != null)) {
+            val imageCapture = imageCaptureUseCase
+            imageCaptureRef.value = null
+            if (cameraProvider != null && (preview != null || analysis != null || imageCapture != null)) {
                 runCatching {
-                    cameraProvider.unbind(*listOfNotNull(preview, analysis).toTypedArray())
+                    cameraProvider.unbind(*listOfNotNull(preview, analysis, imageCapture).toTypedArray())
                 }
             }
             analysisExecutor.shutdown()
@@ -86,6 +138,9 @@ fun CameraPreview(
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                 imageAnalysis.setAnalyzer(analysisExecutor, analyzer)
+                val imageCapture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .build()
 
                 if (disposed) {
                     imageAnalysis.clearAnalyzer()
@@ -101,7 +156,15 @@ fun CameraPreview(
                 provider = cameraProvider
                 previewUseCase = preview
                 analysisUseCase = imageAnalysis
-                cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
+                imageCaptureUseCase = imageCapture
+                imageCaptureRef.value = imageCapture
+                cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    selector,
+                    preview,
+                    imageAnalysis,
+                    imageCapture
+                )
                 if (!disposed) currentOnReady.value()
             } catch (error: Throwable) {
                 unbindAndShutdown()
@@ -133,3 +196,5 @@ fun CameraPreview(
         overlay()
     }
 }
+
+private const val OCR_CAPTURE_DIRECTORY = "chatbuddy-ocr-captures"

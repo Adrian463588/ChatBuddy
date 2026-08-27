@@ -10,10 +10,12 @@ internal object LlamaNative {
     external fun nativeStart(
         systemPrompt: String,
         userPrompt: String,
+        cacheKey: String,
         maxTokens: Int,
         temperature: Float,
         topP: Float
     ): Int
     external fun nativeNext(): String?
+    external fun nativeLastStatus(): Int
     external fun nativeClose()
 }

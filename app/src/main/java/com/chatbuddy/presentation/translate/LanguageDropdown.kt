@@ -25,6 +25,7 @@ import com.chatbuddy.domain.model.LanguageOption
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
+@Suppress("DEPRECATION")
 @Composable
 internal fun LanguageDropdown(
     label: String,

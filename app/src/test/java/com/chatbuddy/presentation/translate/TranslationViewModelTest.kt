@@ -7,8 +7,10 @@ import com.chatbuddy.domain.model.TranslationModelStatus
 import com.chatbuddy.domain.model.TranslationProviderKind
 import com.chatbuddy.domain.model.TranslationRequest
 import com.chatbuddy.domain.model.TranslationResult
+import com.chatbuddy.domain.model.TranslationHistoryEntry
 import com.chatbuddy.domain.model.VoiceCapabilities
 import com.chatbuddy.domain.model.VoiceTranscript
+import com.chatbuddy.domain.repository.TranslationHistoryRepository
 import com.chatbuddy.domain.repository.TranslationRepository
 import com.chatbuddy.domain.repository.VoiceRepository
 import kotlinx.coroutines.CompletableDeferred
@@ -26,6 +28,7 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.emptyFlow
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -43,7 +46,7 @@ class TranslationViewModelTest {
     fun translationWaitsForTheOfflineModelAndUsesDebounce() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val repository = RecordingTranslationRepository(modelReady = true)
-        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository())
+        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository(), EmptyHistoryRepository())
         advanceUntilIdle()
 
         viewModel.setSourceText("hello")
@@ -61,7 +64,7 @@ class TranslationViewModelTest {
     fun downloadActionMakesTheManagedModelAvailable() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val repository = RecordingTranslationRepository(modelReady = false)
-        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository())
+        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository(), EmptyHistoryRepository())
         advanceUntilIdle()
 
         assertFalse(viewModel.state.value.modelReady)
@@ -77,7 +80,7 @@ class TranslationViewModelTest {
     fun liveConversationTranslatesFinalWhisperTurnAndReturnsToListening() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val repository = RecordingTranslationRepository(modelReady = true)
-        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository())
+        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository(), EmptyHistoryRepository())
         advanceUntilIdle()
 
         viewModel.toggleLiveTranslation()
@@ -94,7 +97,7 @@ class TranslationViewModelTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val releaseFirstTurn = CompletableDeferred<Unit>()
         val repository = DelayedTranslationRepository(releaseFirstTurn)
-        val viewModel = TranslationViewModel(repository, SequencedVoiceRepository())
+        val viewModel = TranslationViewModel(repository, SequencedVoiceRepository(), EmptyHistoryRepository())
         advanceUntilIdle()
 
         viewModel.toggleLiveTranslation()
@@ -119,7 +122,8 @@ class TranslationViewModelTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val viewModel = TranslationViewModel(
             RecordingTranslationRepository(modelReady = true),
-            FailingVoiceRepository()
+            FailingVoiceRepository(),
+            EmptyHistoryRepository()
         )
         advanceUntilIdle()
 
@@ -169,6 +173,15 @@ class TranslationViewModelTest {
                 )
             )
         }
+    }
+
+    private class EmptyHistoryRepository : TranslationHistoryRepository {
+        override fun observeRecent(limit: Int): Flow<List<TranslationHistoryEntry>> = emptyFlow()
+
+        override suspend fun add(entry: TranslationHistoryEntry): AppResult<Unit> =
+            AppResult.Success(Unit)
+
+        override suspend fun clear(): AppResult<Unit> = AppResult.Success(Unit)
     }
 
     private class RecordingVoiceRepository : VoiceRepository {

@@ -13,6 +13,20 @@ data class DocumentRecord(
     val indexed: Boolean
 )
 
+data class FolderIndexFailure(
+    val sourceUri: String,
+    val displayName: String,
+    val reason: String
+)
+
+data class DocumentFolderIndexSummary(
+    val folderUri: String,
+    val discoveredFiles: Int,
+    val indexedFiles: Int,
+    val skippedFiles: Int,
+    val failures: List<FolderIndexFailure>
+)
+
 data class DocumentChunk(
     val documentId: DocumentId,
     val ordinal: Int,

@@ -2,12 +2,15 @@ package com.chatbuddy.domain.repository
 
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.ModelArtifact
+import com.chatbuddy.domain.model.ModelCacheStatus
 import com.chatbuddy.domain.model.ModelState
 import kotlinx.coroutines.flow.Flow
 
 interface ModelRepository {
     fun hasStorageFolder(): Boolean
+    suspend fun validateStorage(): AppResult<Unit>
     suspend fun listArtifacts(): AppResult<List<ModelArtifact>>
+    suspend fun inspectCache(): AppResult<List<ModelCacheStatus>>
     fun observeStates(): Flow<List<ModelState>>
     suspend fun selectStorageFolder(treeUri: String): AppResult<Unit>
     suspend fun download(artifactId: String): AppResult<Unit>

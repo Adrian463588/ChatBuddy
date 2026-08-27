@@ -7,9 +7,11 @@ import com.chatbuddy.domain.model.LanguageOption
 import com.chatbuddy.domain.model.LiveTranslationPhase
 import com.chatbuddy.domain.model.TranslationRequest
 import com.chatbuddy.domain.model.TranslationResult
+import com.chatbuddy.domain.model.TranslationHistoryEntry
 import com.chatbuddy.domain.model.VoiceCapabilities
 import com.chatbuddy.domain.model.VoiceTranscript
 import com.chatbuddy.domain.repository.TranslationRepository
+import com.chatbuddy.domain.repository.TranslationHistoryRepository
 import com.chatbuddy.domain.repository.VoiceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.concurrent.atomic.AtomicLong
@@ -22,6 +24,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -46,13 +49,16 @@ data class TranslationUiState(
     val liveError: String? = null,
     val liveChecking: Boolean = false,
     val liveSpeakTranslation: Boolean = true,
-    val voiceCapabilities: VoiceCapabilities? = null
+    val voiceCapabilities: VoiceCapabilities? = null,
+    val history: List<TranslationHistoryEntry> = emptyList(),
+    val historyError: String? = null
 )
 
 @HiltViewModel
 class TranslationViewModel @Inject constructor(
     private val repository: TranslationRepository,
-    private val voiceRepository: VoiceRepository
+    private val voiceRepository: VoiceRepository,
+    private val historyRepository: TranslationHistoryRepository
 ) : ViewModel() {
     private val _state = MutableStateFlow(TranslationUiState())
     val state: StateFlow<TranslationUiState> = _state.asStateFlow()
@@ -65,6 +71,22 @@ class TranslationViewModel @Inject constructor(
     private val liveGeneration = AtomicLong(0L)
 
     init {
+        viewModelScope.launch {
+            historyRepository.observeRecent()
+                .catch { error ->
+                    _state.update {
+                        it.copy(
+                            historyError = error.message
+                                ?.trim()
+                                ?.takeIf(String::isNotEmpty)
+                                ?: "Unable to load translation history."
+                        )
+                    }
+                }
+                .collect { entries ->
+                    _state.update { it.copy(history = entries, historyError = null) }
+                }
+        }
         viewModelScope.launch {
             val result = try {
                 repository.availableLanguages()
@@ -137,6 +159,16 @@ class TranslationViewModel @Inject constructor(
 
     fun setLiveSpeakTranslation(enabled: Boolean) {
         _state.update { it.copy(liveSpeakTranslation = enabled) }
+    }
+
+    fun clearHistory() {
+        viewModelScope.launch {
+            when (val result = historyRepository.clear()) {
+                is AppResult.Success -> _state.update { it.copy(historyError = null) }
+                is AppResult.Error -> _state.update { it.copy(historyError = result.message) }
+                AppResult.Loading -> Unit
+            }
+        }
     }
 
     fun toggleLiveTranslation() {
@@ -337,8 +369,9 @@ class TranslationViewModel @Inject constructor(
             )
         }
 
+        val request = TranslationRequest(cleanText, sourceLanguage, targetLanguage)
         val result = try {
-            repository.translate(TranslationRequest(cleanText, sourceLanguage, targetLanguage))
+            repository.translate(request)
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (error: Throwable) {
@@ -370,6 +403,7 @@ class TranslationViewModel @Inject constructor(
                         liveError = null
                     )
                 }
+                recordHistory(request, result.data)
                 if (shouldSpeak) {
                     val spoken = try {
                         voiceRepository.speak(result.data.text, targetLanguage)
@@ -549,13 +583,16 @@ class TranslationViewModel @Inject constructor(
             currentCoroutineContext().ensureActive()
             if (requestId != translationGeneration.get()) return@launch
             when (result) {
-                is AppResult.Success -> _state.update {
-                    if (it.sourceText == request.text &&
-                        it.sourceLanguage == request.sourceLanguage &&
-                        it.targetLanguage == request.targetLanguage
-                    ) {
-                        it.copy(result = result.data, loading = false, error = null)
-                    } else it
+                is AppResult.Success -> {
+                    val isCurrent = _state.value.let {
+                        it.sourceText == request.text &&
+                            it.sourceLanguage == request.sourceLanguage &&
+                            it.targetLanguage == request.targetLanguage
+                    }
+                    if (isCurrent) {
+                        _state.update { it.copy(result = result.data, loading = false, error = null) }
+                        recordHistory(request, result.data)
+                    }
                 }
                 is AppResult.Error -> _state.update {
                     if (it.sourceText == request.text &&
@@ -567,6 +604,26 @@ class TranslationViewModel @Inject constructor(
                 }
                 AppResult.Loading -> _state.update { it.copy(loading = true) }
             }
+        }
+    }
+
+    private suspend fun recordHistory(request: TranslationRequest, result: TranslationResult) {
+        if (request.text.isBlank() || result.text.isBlank()) return
+        when (
+            val saved = historyRepository.add(
+                TranslationHistoryEntry(
+                    sourceText = request.text,
+                    translatedText = result.text,
+                    sourceLanguage = request.sourceLanguage,
+                    targetLanguage = request.targetLanguage,
+                    provider = result.provider,
+                    createdAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        ) {
+            is AppResult.Success -> _state.update { it.copy(historyError = null) }
+            is AppResult.Error -> _state.update { it.copy(historyError = saved.message) }
+            AppResult.Loading -> Unit
         }
     }
 

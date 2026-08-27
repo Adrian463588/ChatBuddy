@@ -3,6 +3,7 @@ package com.chatbuddy.presentation.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.chatbuddy.domain.model.AppResult
+import com.chatbuddy.domain.model.ModelCacheStatus
 import com.chatbuddy.domain.model.ModelState
 import com.chatbuddy.domain.repository.ModelRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -19,6 +20,8 @@ import kotlinx.coroutines.launch
 data class HomeUiState(
     val storageConfigured: Boolean = false,
     val modelStates: List<ModelState> = emptyList(),
+    val cacheStatuses: List<ModelCacheStatus> = emptyList(),
+    val cacheError: String? = null,
     val selectedTab: HomeTab = HomeTab.CHAT,
     val busy: Boolean = false,
     val pendingChatText: String? = null,
@@ -45,6 +48,10 @@ class HomeViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            val storage = modelRepository.validateStorage()
+            _state.update { it.copy(storageConfigured = storage is AppResult.Success) }
+        }
+        viewModelScope.launch {
             modelRepository.observeStates().collect { models ->
                 _state.update { it.copy(modelStates = models) }
             }
@@ -53,6 +60,17 @@ class HomeViewModel @Inject constructor(
             when (val result = modelRepository.listArtifacts()) {
                 is AppResult.Success -> result.data.forEach { modelRepository.verify(it.id) }
                 is AppResult.Error, AppResult.Loading -> Unit
+            }
+        }
+        viewModelScope.launch {
+            when (val result = modelRepository.inspectCache()) {
+                is AppResult.Success -> _state.update {
+                    it.copy(cacheStatuses = result.data, cacheError = null)
+                }
+                is AppResult.Error -> _state.update {
+                    it.copy(cacheStatuses = emptyList(), cacheError = result.message)
+                }
+                AppResult.Loading -> Unit
             }
         }
     }

@@ -22,12 +22,20 @@ import com.chatbuddy.domain.repository.VoiceRepository
 import com.chatbuddy.ai.voice.WhisperJniEngine
 import com.chatbuddy.ai.voice.WhisperEngine
 import com.chatbuddy.data.repository.LocalRagChatRepository
-import com.chatbuddy.data.repository.MediaWikiWebSearchRepository
+import com.chatbuddy.data.repository.OfficialWebSearchRepositoryImpl
+import com.chatbuddy.data.repository.WebProviderSettingsRepositoryImpl
 import com.chatbuddy.domain.repository.ChatRepository
 import com.chatbuddy.domain.repository.WebSearchRepository
+import com.chatbuddy.domain.repository.OfficialWebSearchRepository
+import com.chatbuddy.domain.repository.WebProviderSettingsRepository
+import com.chatbuddy.data.repository.TranslationHistoryRepositoryImpl
+import com.chatbuddy.domain.repository.TranslationHistoryRepository
+import com.chatbuddy.data.repository.ImageTranslationRepositoryImpl
+import com.chatbuddy.domain.repository.ImageTranslationRepository
 import com.chatbuddy.ai.llm.LocalLlmEngine
 import com.chatbuddy.ai.llm.LlamaJniEngine
 import androidx.room.Room
+import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import dagger.Module
 import dagger.Provides
 import dagger.Binds
@@ -35,6 +43,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import okhttp3.OkHttpClient
+import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
@@ -63,7 +72,19 @@ abstract class AppBindings {
 
     @Binds
     @Singleton
+    abstract fun bindTranslationHistoryRepository(
+        impl: TranslationHistoryRepositoryImpl
+    ): TranslationHistoryRepository
+
+    @Binds
+    @Singleton
     abstract fun bindOcrRepository(impl: MlKitOcrRepository): OcrRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindImageTranslationRepository(
+        impl: ImageTranslationRepositoryImpl
+    ): ImageTranslationRepository
 
     @Binds
     @Singleton
@@ -83,7 +104,17 @@ abstract class AppBindings {
 
     @Binds
     @Singleton
-    abstract fun bindWebSearchRepository(impl: MediaWikiWebSearchRepository): WebSearchRepository
+    abstract fun bindWebSearchRepository(impl: OfficialWebSearchRepositoryImpl): WebSearchRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindOfficialWebSearchRepository(impl: OfficialWebSearchRepositoryImpl): OfficialWebSearchRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindWebProviderSettingsRepository(
+        impl: WebProviderSettingsRepositoryImpl
+    ): WebProviderSettingsRepository
 
     @Binds
     @Singleton
@@ -95,10 +126,26 @@ abstract class AppBindings {
 object AppProviders {
     @Provides
     @Singleton
-    fun provideDatabase(@ApplicationContext context: Context): AppDatabase =
-        Room.databaseBuilder(context, AppDatabase::class.java, "chatbuddy.db")
-            .addMigrations(AppDatabase.MIGRATION_1_2)
+    fun provideDatabase(@ApplicationContext context: Context): AppDatabase {
+        val driver = BundledSQLiteDriver()
+        val extensionPath = File(
+            context.applicationInfo.nativeLibraryDir,
+            "libchatbuddy_sqlite_vec.so"
+        )
+        if (extensionPath.isFile) {
+            runCatching {
+                driver.addExtension(extensionPath.absolutePath, "sqlite3_vec_init")
+            }
+        }
+        return Room.databaseBuilder(context, AppDatabase::class.java, "chatbuddy.db")
+            .setDriver(driver)
+            .addMigrations(
+                AppDatabase.MIGRATION_1_2,
+                AppDatabase.MIGRATION_2_3,
+                AppDatabase.MIGRATION_3_4
+            )
             .build()
+    }
 
     @Provides
     @Singleton

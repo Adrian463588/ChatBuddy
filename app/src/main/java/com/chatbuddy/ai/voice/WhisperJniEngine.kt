@@ -42,9 +42,16 @@ class WhisperJniEngine @Inject constructor(
         get() = loaded && runCatching { WhisperNative.nativeIsLoaded() }.getOrDefault(false)
 
     override suspend fun ensureLoaded(): AppResult<Unit> = loadMutex.withLock {
-        if (isReady) return@withLock AppResult.Success(Unit)
         withContext(Dispatchers.IO) {
-            loadFromDurableStorage()
+            val artifact = try {
+                manifest.read().firstOrNull { it.id == WHISPER_ARTIFACT_ID }
+            } catch (error: Exception) {
+                return@withContext AppResult.Error("Whisper model manifest could not be read.", error)
+            } ?: return@withContext AppResult.Error("Whisper model manifest entry is missing")
+            if (isReady && loadedFingerprint == artifact.sha256.normalizedSha()) {
+                return@withContext AppResult.Success(Unit)
+            }
+            loadFromDurableStorage(artifact)
         }
     }
 
@@ -104,13 +111,7 @@ class WhisperJniEngine @Inject constructor(
         }
     }
 
-    private suspend fun loadFromDurableStorage(): AppResult<Unit> {
-        val artifact = try {
-            manifest.read().firstOrNull { it.id == WHISPER_ARTIFACT_ID }
-        } catch (error: Exception) {
-            return AppResult.Error("Whisper model manifest could not be read.", error)
-        } ?: return AppResult.Error("Whisper model manifest entry is missing")
-
+    private suspend fun loadFromDurableStorage(artifact: ModelArtifact): AppResult<Unit> {
         val source = modelStore.finalFile(artifact)
             ?: return AppResult.Error(
                 "Download Whisper Base Q5_1 in Settings before using live translation"

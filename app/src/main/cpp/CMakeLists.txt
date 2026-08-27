@@ -47,6 +47,42 @@ FetchContent_Declare(
 )
 FetchContent_Populate(whisper_cpp)
 
+# sqlite-vec is built as a loadable extension for AndroidX BundledSQLiteDriver.
+# The pinned commit is an upstream source dependency; no model or runtime data
+# is downloaded by the application at runtime.
+FetchContent_Declare(
+    sqlite_vec
+    GIT_REPOSITORY https://github.com/asg017/sqlite-vec.git
+    GIT_TAG ce7b53e8490e40cd44af73aee463f99b6b50598c
+    GIT_SHALLOW TRUE
+)
+FetchContent_Populate(sqlite_vec)
+
+# sqlite-vec is an SQLite loadable extension and therefore needs the public
+# SQLite C headers at compile time. The upstream source repository keeps the
+# generated sqlite3.h out of the tree, so fetch the exact pinned release
+# templates and generate the public header in the build directory.
+set(SQLITE_HEADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/sqlite-headers")
+file(MAKE_DIRECTORY "${SQLITE_HEADER_DIR}")
+set(SQLITE_H_IN "${SQLITE_HEADER_DIR}/sqlite.h.in")
+set(SQLITE_EXT_H "${SQLITE_HEADER_DIR}/sqlite3ext.h")
+file(DOWNLOAD
+    "https://raw.githubusercontent.com/sqlite/sqlite/version-3.46.1/src/sqlite.h.in"
+    "${SQLITE_H_IN}"
+    EXPECTED_HASH SHA256=f06c5401b1aa27c8aba0d1869c589316923c9fb9c425dced6e5dc0d4c648c1fb
+    TLS_VERIFY ON
+)
+file(DOWNLOAD
+    "https://raw.githubusercontent.com/sqlite/sqlite/version-3.46.1/src/sqlite3ext.h"
+    "${SQLITE_EXT_H}"
+    EXPECTED_HASH SHA256=b184dd1586d935133d37ad76fa353faf0a1021ff2fdedeedcc3498fff74bbb94
+    TLS_VERIFY ON
+)
+file(READ "${SQLITE_H_IN}" SQLITE_H_CONTENT)
+string(REPLACE "--VERS--" "3.46.1" SQLITE_H_CONTENT "${SQLITE_H_CONTENT}")
+string(REPLACE "--VERSION-NUMBER--" "3046001" SQLITE_H_CONTENT "${SQLITE_H_CONTENT}")
+file(WRITE "${SQLITE_HEADER_DIR}/sqlite3.h" "${SQLITE_H_CONTENT}")
+
 add_library(chatbuddy_llama SHARED chatbuddy_llama.cpp)
 find_library(log-lib log)
 
@@ -86,3 +122,30 @@ target_compile_options(chatbuddy_whisper PRIVATE
 )
 
 target_link_libraries(chatbuddy_whisper PRIVATE llama ${log-lib} android)
+
+add_library(chatbuddy_sqlite_vec SHARED
+    ${sqlite_vec_SOURCE_DIR}/sqlite-vec.c
+)
+
+target_include_directories(chatbuddy_sqlite_vec PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${sqlite_vec_SOURCE_DIR}
+    ${sqlite_vec_SOURCE_DIR}/vendor
+    ${SQLITE_HEADER_DIR}
+)
+
+target_compile_definitions(chatbuddy_sqlite_vec PRIVATE
+    SQLITE_VEC_OMIT_FS
+)
+
+target_compile_options(chatbuddy_sqlite_vec PRIVATE
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+)
+
+target_link_options(chatbuddy_sqlite_vec PRIVATE
+    "-Wl,--allow-shlib-undefined"
+)
+
+target_link_libraries(chatbuddy_sqlite_vec PRIVATE ${log-lib} m)

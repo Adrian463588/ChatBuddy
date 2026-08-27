@@ -99,7 +99,11 @@ class MlKitTranslationRepository @Inject constructor() : TranslationRepository {
         modelMutex.withLock {
             try {
                 val manager = RemoteModelManager.getInstance()
-                val conditions = DownloadConditions.Builder().requireWifi().build()
+                // ML Kit owns these language packs through Play services. Requiring Wi-Fi here
+                // makes the task remain queued on devices whose connectivity provider does not
+                // expose the transport as Wi-Fi in time. The user already opted into installing
+                // the pack, so allow any validated network and let Play services manage retries.
+                val conditions = DownloadConditions.Builder().build()
                 val models = listOf(languages.first, languages.second)
                     .distinct()
                     .map(::modelFor)
@@ -113,7 +117,7 @@ class MlKitTranslationRepository @Inject constructor() : TranslationRepository {
                 val ready = models.all { manager.isModelDownloaded(it).awaitCancellable() }
                 if (!ready) {
                     return@withLock AppResult.Error(
-                        "Offline language pack is not ready. Keep Wi-Fi connected and try again."
+                        "Offline language pack is not ready. Keep a network connection and try again."
                     )
                 }
                 AppResult.Success(Unit)
@@ -121,7 +125,7 @@ class MlKitTranslationRepository @Inject constructor() : TranslationRepository {
                 throw cancellation
             } catch (error: Exception) {
                 AppResult.Error(
-                    "Language pack download failed. Keep Wi-Fi connected and try again.",
+                    "Language pack download failed. Check the network connection and try again.",
                     error
                 )
             }

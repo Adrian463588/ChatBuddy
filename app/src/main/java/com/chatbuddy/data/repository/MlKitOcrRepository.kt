@@ -2,6 +2,7 @@ package com.chatbuddy.data.repository
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.media.ExifInterface
 import android.net.Uri
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.OcrResult
@@ -19,6 +20,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
@@ -41,6 +43,8 @@ class MlKitOcrRepository @Inject constructor(
                 val (imageWidth, imageHeight) = readImageDimensions(imageUri)
                 val result = recognizer.process(image).awaitTask()
                 AppResult.Success(result.toDomain(languageTag, imageWidth, imageHeight))
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 AppResult.Error("On-device OCR failed", error)
             } finally {
@@ -64,7 +68,23 @@ class MlKitOcrRepository @Inject constructor(
         context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
             BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor, null, options)
         }
-        options.outWidth.coerceAtLeast(0) to options.outHeight.coerceAtLeast(0)
+        val orientation = context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+            ExifInterface(descriptor.fileDescriptor).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )
+        } ?: ExifInterface.ORIENTATION_NORMAL
+        val width = options.outWidth.coerceAtLeast(0)
+        val height = options.outHeight.coerceAtLeast(0)
+        if (orientation == ExifInterface.ORIENTATION_ROTATE_90 ||
+            orientation == ExifInterface.ORIENTATION_ROTATE_270 ||
+            orientation == ExifInterface.ORIENTATION_TRANSPOSE ||
+            orientation == ExifInterface.ORIENTATION_TRANSVERSE
+        ) {
+            height to width
+        } else {
+            width to height
+        }
     }.getOrDefault(0 to 0)
 
     private fun Text.Line.toDomain(): OcrTextBlock? {

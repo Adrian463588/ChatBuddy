@@ -3,6 +3,8 @@ package com.chatbuddy.presentation.ocr
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -27,6 +29,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.chatbuddy.domain.model.OcrResult
+import com.chatbuddy.domain.model.TranslatedBlock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -34,6 +37,7 @@ import kotlinx.coroutines.withContext
 fun OcrImagePreview(
     uri: String,
     result: OcrResult?,
+    translatedBlocks: List<TranslatedBlock> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -51,9 +55,10 @@ fun OcrImagePreview(
             .semantics { contentDescription = "Selected image for OCR" },
         contentAlignment = Alignment.Center
     ) {
-        if (bitmap != null) {
+        val preview = bitmap
+        if (preview != null) {
             Image(
-                bitmap = bitmap!!.asImageBitmap(),
+                bitmap = preview.asImageBitmap(),
                 contentDescription = "Selected image for OCR",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
@@ -63,6 +68,11 @@ fun OcrImagePreview(
         }
         if (result != null) {
             OcrBoundingBoxOverlay(result, modifier = Modifier.fillMaxSize())
+            TranslatedBlockOverlay(
+                result = result,
+                blocks = translatedBlocks,
+                modifier = Modifier.fillMaxSize()
+            )
         }
     }
 }
@@ -83,10 +93,41 @@ private fun decodePreview(context: Context, uri: Uri): Bitmap? {
             inSampleSize = sampleSize
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
-        context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+        val decoded = context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
             BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor, null, options)
-        }
+        } ?: return null
+        orientBitmap(context, uri, decoded)
     } catch (_: Exception) {
         null
     }
+}
+
+private fun orientBitmap(context: Context, uri: Uri, bitmap: Bitmap): Bitmap {
+    val orientation = context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+        ExifInterface(descriptor.fileDescriptor).getAttributeInt(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_NORMAL
+        )
+    } ?: ExifInterface.ORIENTATION_NORMAL
+    val matrix = Matrix().apply {
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> setScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> setRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> setScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                setRotate(90f)
+                postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_90 -> setRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                setRotate(-90f)
+                postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_270 -> setRotate(-90f)
+            else -> Unit
+        }
+    }
+    if (matrix.isIdentity) return bitmap
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        .also { transformed -> if (transformed !== bitmap) bitmap.recycle() }
 }

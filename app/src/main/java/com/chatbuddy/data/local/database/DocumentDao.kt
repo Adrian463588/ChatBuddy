@@ -1,7 +1,6 @@
 package com.chatbuddy.data.local.database
 
 import androidx.room.Dao
-import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
@@ -10,6 +9,9 @@ import kotlinx.coroutines.flow.Flow
 interface DocumentDao {
     @Query("SELECT * FROM documents ORDER BY displayName COLLATE NOCASE")
     fun observeDocuments(): Flow<List<DocumentEntity>>
+
+    @Query("SELECT * FROM documents WHERE id = :documentId LIMIT 1")
+    suspend fun findDocument(documentId: String): DocumentEntity?
 
     @Insert
     suspend fun insertDocument(document: DocumentEntity)
@@ -28,6 +30,38 @@ interface DocumentDao {
 
     @Query(
         """
+        SELECT * FROM document_chunks
+        WHERE documentId = :documentId
+          AND (embedding IS NULL OR length(embedding) != 1536)
+        ORDER BY ordinal ASC
+        LIMIT 1
+        """
+    )
+    suspend fun findFirstIncompleteChunk(documentId: String): DocumentChunkEntity?
+
+    @Query(
+        """
+        SELECT * FROM document_chunks
+        WHERE documentId = :documentId
+          AND length(embedding) = 1536
+        ORDER BY ordinal DESC
+        LIMIT 1
+        """
+    )
+    suspend fun findLastCompleteChunk(documentId: String): DocumentChunkEntity?
+
+    @Query(
+        """
+        SELECT * FROM document_chunks
+        WHERE documentId = :documentId
+        ORDER BY ordinal DESC
+        LIMIT 1
+        """
+    )
+    suspend fun findLastChunk(documentId: String): DocumentChunkEntity?
+
+    @Query(
+        """
         SELECT c.*, d.displayName AS documentName
         FROM document_chunks AS c
         INNER JOIN documents AS d ON d.id = c.documentId
@@ -36,12 +70,30 @@ interface DocumentDao {
     )
     suspend fun findChunksWithDocuments(ids: List<Long>): List<DocumentChunkWithDocument>
 
-    @Query("SELECT id, documentId, ordinal, embedding FROM document_chunks WHERE embedding IS NOT NULL")
-    suspend fun findEmbeddedVectors(): List<DocumentVectorRow>
+    @Query(
+        """
+        SELECT id, documentId, ordinal, embedding
+        FROM document_chunks
+        WHERE embedding IS NOT NULL
+          AND length(embedding) = 1536
+          AND id > :afterId
+        ORDER BY id ASC
+        LIMIT :limit
+        """
+    )
+    suspend fun findEmbeddedVectorsAfter(
+        afterId: Long,
+        limit: Int
+    ): List<DocumentVectorRow>
 
     @Query("DELETE FROM documents WHERE id = :documentId")
     suspend fun deleteDocument(documentId: String)
 
     @Query("DELETE FROM document_chunks WHERE documentId = :documentId")
-    suspend fun deleteChunks(documentId: String)
+    suspend fun deleteChunks(documentId: String): Int
+
+    @Query(
+        "DELETE FROM document_chunks WHERE documentId = :documentId AND ordinal >= :fromOrdinal"
+    )
+    suspend fun deleteChunksFromOrdinal(documentId: String, fromOrdinal: Int): Int
 }
