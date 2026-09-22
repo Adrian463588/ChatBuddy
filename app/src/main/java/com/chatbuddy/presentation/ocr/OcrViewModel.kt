@@ -5,11 +5,14 @@ import androidx.lifecycle.viewModelScope
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.OcrResult
 import com.chatbuddy.domain.model.TranslatedBlock
+import com.chatbuddy.domain.model.TranslationProviderKind
 import com.chatbuddy.domain.repository.ImageTranslationRepository
 import com.chatbuddy.domain.repository.OcrRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
+import kotlinx.coroutines.async
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,8 +27,11 @@ data class OcrUiState(
     val processing: Boolean = false,
     val error: String? = null,
     val translatedBlocks: List<TranslatedBlock> = emptyList(),
+    val fullTranslation: String? = null,
     val translationProcessing: Boolean = false,
-    val translationError: String? = null
+    val translationError: String? = null,
+    val isLiveTranslateEnabled: Boolean = true,
+    val isFrozen: Boolean = false
 )
 
 @HiltViewModel
@@ -39,11 +45,13 @@ class OcrViewModel @Inject constructor(
     private val translationGeneration = AtomicLong(0L)
     private var recognitionJob: Job? = null
     private var translationJob: Job? = null
+    private var pendingResult: OcrResult? = null
     private var sourceLanguage = "en"
     private var targetLanguage = "id"
     private var lastTranslationKey: String? = null
 
     fun onCameraResult(result: OcrResult) {
+        if (_state.value.isFrozen) return
         operationGeneration.incrementAndGet()
         recognitionJob?.cancel()
         publishResult(result, imageUri = null)
@@ -51,6 +59,32 @@ class OcrViewModel @Inject constructor(
 
     fun onCameraError(message: String) {
         _state.update { it.copy(processing = false, error = message) }
+    }
+
+    fun freezeFrame() {
+        _state.update { it.copy(isFrozen = true) }
+    }
+
+    fun unfreezeCamera() {
+        _state.update { it.copy(isFrozen = false, imageUri = null) }
+        lastTranslationKey = null
+        pendingResult = null
+    }
+
+    fun clearCapturedImage() {
+        unfreezeCamera()
+    }
+
+    fun setLiveTranslateEnabled(enabled: Boolean) {
+        if (_state.value.isLiveTranslateEnabled == enabled) return
+        _state.update { it.copy(isLiveTranslateEnabled = enabled) }
+        if (enabled) {
+            retryTranslation()
+        }
+    }
+
+    fun toggleLiveTranslate() {
+        setLiveTranslateEnabled(!_state.value.isLiveTranslateEnabled)
     }
 
     fun recognize(uri: String, languageTag: String = "en") {
@@ -128,96 +162,127 @@ class OcrViewModel @Inject constructor(
     }
 
     private fun publishResult(result: OcrResult, imageUri: String?) {
+        val existingTranslationMap = _state.value.translatedBlocks
+            .filter { it.translatedText.isNotBlank() && it.translatedText.trim() != it.source.text.trim() }
+            .associate { it.source.text.trim() to it.translatedText }
+
+        val immediateBlocks = if (_state.value.isLiveTranslateEnabled && existingTranslationMap.isNotEmpty()) {
+            result.blocks.mapNotNull { block ->
+                val tr = existingTranslationMap[block.text.trim()] ?: return@mapNotNull null
+                TranslatedBlock(
+                    source = block,
+                    translatedText = tr,
+                    provider = TranslationProviderKind.ML_KIT_PLAY_SERVICES
+                )
+            }
+        } else {
+            emptyList()
+        }
+
         _state.update {
             it.copy(
                 result = result,
                 imageUri = imageUri,
                 processing = false,
                 error = null,
-                translatedBlocks = emptyList(),
-                translationProcessing = false,
-                translationError = null
+                translatedBlocks = if (immediateBlocks.isNotEmpty()) immediateBlocks else it.translatedBlocks
             )
         }
-        translateBlocks(result)
+
+        if (_state.value.isLiveTranslateEnabled || imageUri != null) {
+            translateBlocks(result)
+        }
     }
 
     private fun translateBlocks(result: OcrResult) {
-        val key = buildString {
-            append(sourceLanguage)
-            append('|')
-            append(targetLanguage)
-            append('|')
-            append(result.text)
-        }
-        if (key == lastTranslationKey) return
-        lastTranslationKey = key
-        translationGeneration.incrementAndGet()
-        val generation = translationGeneration.get()
-        translationJob?.cancel()
-        if (result.blocks.isEmpty() || sourceLanguage == targetLanguage) {
+        if (result.blocks.isEmpty() || sourceLanguage.equals(targetLanguage, ignoreCase = true)) {
             _state.update {
-                if (it.result === result || it.result?.text == result.text) {
-                    it.copy(
-                        translatedBlocks = result.blocks.map { block ->
-                            TranslatedBlock(
-                                source = block,
-                                translatedText = block.text,
-                                provider = com.chatbuddy.domain.model.TranslationProviderKind.ML_KIT_PLAY_SERVICES
-                            )
-                        },
-                        translationProcessing = false,
-                        translationError = null
-                    )
-                } else it
+                it.copy(
+                    translatedBlocks = emptyList(),
+                    fullTranslation = if (sourceLanguage.equals(targetLanguage, ignoreCase = true)) result.text else null,
+                    translationProcessing = false,
+                    translationError = null
+                )
             }
             return
         }
+
+        val key = "$sourceLanguage|$targetLanguage|${result.text.trim()}"
+        if (key == lastTranslationKey && _state.value.translatedBlocks.isNotEmpty() && _state.value.fullTranslation != null) {
+            return
+        }
+
+        if (translationJob?.isActive == true) {
+            pendingResult = result
+            return
+        }
+
+        lastTranslationKey = key
+        pendingResult = null
+
+        translationGeneration.incrementAndGet()
+        val generation = translationGeneration.get()
+
         translationJob = viewModelScope.launch {
             _state.update { it.copy(translationProcessing = true, translationError = null) }
             try {
-                when (
-                    val result = imageTranslationRepository.translateBlocks(
+                val blocksDeferred = async {
+                    imageTranslationRepository.translateBlocks(
                         result,
                         sourceLanguage,
                         targetLanguage
                     )
-                ) {
-                    is AppResult.Success -> _state.update {
-                        if (generation == translationGeneration.get()) {
-                            it.copy(
-                                translatedBlocks = result.data,
-                                translationProcessing = false,
-                                translationError = null
-                            )
-                        } else it
+                }
+                val textDeferred = async {
+                    imageTranslationRepository.translateText(
+                        result.text,
+                        sourceLanguage,
+                        targetLanguage
+                    )
+                }
+
+                val blocksRes = blocksDeferred.await()
+                val textRes = textDeferred.await()
+
+                if (generation == translationGeneration.get()) {
+                    val blocks = if (blocksRes is AppResult.Success) blocksRes.data else emptyList()
+                    val fullText = if (textRes is AppResult.Success) textRes.data else null
+                    val error = if (blocksRes is AppResult.Error) {
+                        blocksRes.message
+                    } else if (textRes is AppResult.Error) {
+                        textRes.message
+                    } else {
+                        null
                     }
-                    is AppResult.Error -> _state.update {
-                        if (generation == translationGeneration.get()) {
-                            it.copy(
-                                translatedBlocks = emptyList(),
-                                translationProcessing = false,
-                                translationError = result.message
-                            )
-                        } else it
-                    }
-                    AppResult.Loading -> _state.update {
-                        if (generation == translationGeneration.get()) it.copy(translationProcessing = true) else it
+
+                    _state.update {
+                        it.copy(
+                            translatedBlocks = blocks,
+                            fullTranslation = fullText,
+                            translationProcessing = false,
+                            translationError = error
+                        )
                     }
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Throwable) {
-                _state.update {
-                    if (generation == translationGeneration.get()) {
+                if (generation == translationGeneration.get()) {
+                    _state.update {
                         it.copy(
-                            translatedBlocks = emptyList(),
                             translationProcessing = false,
                             translationError = error.message ?: "Image translation failed."
                         )
-                    } else it
+                    }
+                }
+            } finally {
+                val next = pendingResult
+                if (next != null && next.text.trim() != result.text.trim() && isActive) {
+                    pendingResult = null
+                    translateBlocks(next)
                 }
             }
         }
     }
+
 }

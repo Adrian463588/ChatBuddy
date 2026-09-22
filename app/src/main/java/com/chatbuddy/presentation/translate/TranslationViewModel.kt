@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.LanguageOption
+import com.chatbuddy.domain.model.LiveConversationTurn
+import com.chatbuddy.domain.model.LiveSpeaker
 import com.chatbuddy.domain.model.LiveTranslationPhase
 import com.chatbuddy.domain.model.TranslationRequest
 import com.chatbuddy.domain.model.TranslationResult
@@ -18,6 +20,7 @@ import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -30,7 +33,20 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+enum class TranslateMode {
+    LIVE_CONVERSATION,
+    TEXT_INPUT
+}
+
+enum class SayMiConversationMode {
+    FREE_TALK,      // Mode Bicara Bebas (Continuous hands-free auto turn-taking)
+    TOUCH_TWO_WAY   // Mode Earphone + Ponsel (Manual tap-to-speak dual mic)
+}
+
 data class TranslationUiState(
+    val translateMode: TranslateMode = TranslateMode.LIVE_CONVERSATION,
+    val sayMiMode: SayMiConversationMode = SayMiConversationMode.TOUCH_TWO_WAY,
+    val partnerFlipped: Boolean = false,
     val languages: List<LanguageOption> = emptyList(),
     val sourceLanguage: String = "en",
     val targetLanguage: String = "id",
@@ -49,7 +65,11 @@ data class TranslationUiState(
     val liveError: String? = null,
     val liveChecking: Boolean = false,
     val liveSpeakTranslation: Boolean = true,
+    val autoTurnTaking: Boolean = false,
     val voiceCapabilities: VoiceCapabilities? = null,
+    val activeSpeaker: LiveSpeaker? = null,
+    val conversationTurns: List<LiveConversationTurn> = emptyList(),
+    val activePlayingAudioText: String? = null,
     val history: List<TranslationHistoryEntry> = emptyList(),
     val historyError: String? = null
 )
@@ -161,6 +181,35 @@ class TranslationViewModel @Inject constructor(
         _state.update { it.copy(liveSpeakTranslation = enabled) }
     }
 
+    fun setAutoTurnTaking(enabled: Boolean) {
+        _state.update {
+            it.copy(
+                autoTurnTaking = enabled,
+                sayMiMode = if (enabled) SayMiConversationMode.FREE_TALK else SayMiConversationMode.TOUCH_TWO_WAY
+            )
+        }
+    }
+
+    fun setSayMiMode(mode: SayMiConversationMode) {
+        _state.update {
+            it.copy(
+                sayMiMode = mode,
+                autoTurnTaking = (mode == SayMiConversationMode.FREE_TALK)
+            )
+        }
+    }
+
+    fun setTranslateMode(mode: TranslateMode) {
+        if (_state.value.translateMode != mode && mode == TranslateMode.TEXT_INPUT) {
+            stopLiveTranslation()
+        }
+        _state.update { it.copy(translateMode = mode) }
+    }
+
+    fun togglePartnerFlipped() {
+        _state.update { it.copy(partnerFlipped = !it.partnerFlipped) }
+    }
+
     fun clearHistory() {
         viewModelScope.launch {
             when (val result = historyRepository.clear()) {
@@ -176,7 +225,18 @@ class TranslationViewModel @Inject constructor(
         if (current.liveEnabled || current.liveChecking || current.livePhase == LiveTranslationPhase.Starting) {
             stopLiveTranslation()
         } else {
-            startLiveTranslation()
+            startLiveTranslation(LiveSpeaker.SPEAKER_A)
+        }
+    }
+
+    fun toggleSpeaker(speaker: LiveSpeaker) {
+        val current = _state.value
+        if ((current.liveEnabled || current.liveChecking || current.livePhase == LiveTranslationPhase.Starting) &&
+            current.activeSpeaker == speaker
+        ) {
+            stopLiveTranslation()
+        } else {
+            startLiveTranslation(speaker)
         }
     }
 
@@ -184,21 +244,67 @@ class TranslationViewModel @Inject constructor(
         stopLiveTranslationInternal(clearError = false)
     }
 
+    fun replayTurnSpeech(turn: LiveConversationTurn, speakTranslation: Boolean = true) {
+        val textToSpeak = if (speakTranslation) turn.translatedText else turn.sourceText
+        val langToSpeak = if (speakTranslation) turn.targetLanguage else turn.sourceLanguage
+        if (textToSpeak.isBlank()) return
+
+        if (_state.value.activePlayingAudioText == textToSpeak) {
+            stopSpeaking()
+            return
+        }
+
+        viewModelScope.launch {
+            _state.update { it.copy(activePlayingAudioText = textToSpeak, liveError = null) }
+            val spoken = voiceRepository.speak(textToSpeak, langToSpeak)
+            _state.update { current ->
+                if (current.activePlayingAudioText == textToSpeak) {
+                    current.copy(
+                        activePlayingAudioText = null,
+                        liveError = if (spoken is AppResult.Error) spoken.message else current.liveError
+                    )
+                } else current
+            }
+        }
+    }
+
+    fun stopSpeaking() {
+        viewModelScope.launch {
+            voiceRepository.stopSpeaking()
+            _state.update { it.copy(activePlayingAudioText = null) }
+        }
+    }
+
+    fun clearConversationSession() {
+        stopSpeaking()
+        _state.update {
+            it.copy(
+                conversationTurns = emptyList(),
+                liveTranscript = "",
+                liveTranslation = null,
+                activePlayingAudioText = null
+            )
+        }
+    }
+
     private fun stopLiveTranslationInternal(clearError: Boolean) {
         liveGeneration.incrementAndGet()
         liveJob?.cancel()
         liveJob = null
+        stopSpeaking()
         _state.update {
             it.copy(
                 liveEnabled = false,
                 livePhase = LiveTranslationPhase.Idle,
                 liveChecking = false,
+                activeSpeaker = null,
+                activePlayingAudioText = null,
                 liveError = if (clearError) null else it.liveError
             )
         }
     }
 
-    private fun startLiveTranslation() {
+    fun startLiveTranslation(speaker: LiveSpeaker = LiveSpeaker.SPEAKER_A) {
         val current = _state.value
         when {
             current.sourceLanguage.isBlank() || current.targetLanguage.isBlank() -> {
@@ -226,21 +332,28 @@ class TranslationViewModel @Inject constructor(
             }
             else -> {
                 val session = liveGeneration.incrementAndGet()
+                val previousJob = liveJob
                 liveJob?.cancel()
+                val inputLang = if (speaker == LiveSpeaker.SPEAKER_B) current.targetLanguage else current.sourceLanguage
+                val outputLang = if (speaker == LiveSpeaker.SPEAKER_B) current.sourceLanguage else current.targetLanguage
                 liveJob = viewModelScope.launch {
+                    runCatching { previousJob?.cancelAndJoin() }
+                    voiceRepository.stopSpeaking()
                     updateLive(session, allowIdle = true) {
                         it.copy(
                             liveChecking = true,
                             liveEnabled = false,
+                            activeSpeaker = speaker,
                             livePhase = LiveTranslationPhase.Starting,
                             liveError = null,
                             liveTranscript = "",
-                            liveTranslation = null
+                            liveTranslation = null,
+                            activePlayingAudioText = null
                         )
                     }
 
                     val capabilitiesResult = try {
-                        voiceRepository.capabilities(current.sourceLanguage)
+                        voiceRepository.capabilities(outputLang)
                     } catch (cancellation: CancellationException) {
                         throw cancellation
                     } catch (error: Throwable) {
@@ -287,6 +400,7 @@ class TranslationViewModel @Inject constructor(
                         it.copy(
                             liveChecking = false,
                             liveEnabled = true,
+                            activeSpeaker = speaker,
                             livePhase = LiveTranslationPhase.Listening,
                             voiceCapabilities = capabilities,
                             liveError = null
@@ -294,7 +408,7 @@ class TranslationViewModel @Inject constructor(
                     }
 
                     try {
-                        voiceRepository.transcribe(current.sourceLanguage).collect { transcript ->
+                        voiceRepository.transcribe(inputLang).collect { transcript ->
                             if (!isLiveSessionCurrent(session)) return@collect
                             when (transcript) {
                                 is VoiceTranscript.Partial -> updateLive(session) {
@@ -306,9 +420,10 @@ class TranslationViewModel @Inject constructor(
                                 }
                                 is VoiceTranscript.Final -> translateLiveTurn(
                                     session = session,
+                                    speaker = speaker,
                                     text = transcript.text,
-                                    sourceLanguage = current.sourceLanguage,
-                                    targetLanguage = current.targetLanguage,
+                                    sourceLanguage = inputLang,
+                                    targetLanguage = outputLang,
                                     capabilities = capabilities
                                 )
                                 is VoiceTranscript.Failed -> updateLive(session) {
@@ -350,13 +465,14 @@ class TranslationViewModel @Inject constructor(
 
     private suspend fun translateLiveTurn(
         session: Long,
+        speaker: LiveSpeaker,
         text: String,
         sourceLanguage: String,
         targetLanguage: String,
         capabilities: VoiceCapabilities
     ) {
         if (!isLiveSessionCurrent(session)) return
-        val cleanText = text.trim()
+        val cleanText = cleanWhisperOutput(text)
         if (cleanText.isBlank()) {
             updateLive(session) { it.copy(livePhase = LiveTranslationPhase.Listening) }
             return
@@ -392,9 +508,17 @@ class TranslationViewModel @Inject constructor(
                 val shouldSpeak = isLiveSessionCurrent(session) &&
                     _state.value.liveSpeakTranslation &&
                     capabilities.offlineTtsReady
+                val newTurn = LiveConversationTurn(
+                    speaker = speaker,
+                    sourceText = cleanText,
+                    translatedText = result.data.text,
+                    sourceLanguage = sourceLanguage,
+                    targetLanguage = targetLanguage
+                )
                 updateLive(session) {
                     it.copy(
                         liveTranslation = result.data,
+                        conversationTurns = it.conversationTurns + newTurn,
                         livePhase = if (shouldSpeak) {
                             LiveTranslationPhase.Speaking
                         } else {
@@ -425,6 +549,13 @@ class TranslationViewModel @Inject constructor(
                         AppResult.Loading -> updateLive(session) {
                             it.copy(livePhase = LiveTranslationPhase.Listening)
                         }
+                    }
+                }
+                if (_state.value.autoTurnTaking && isLiveSessionCurrent(session) && _state.value.liveEnabled) {
+                    val nextSpeaker = if (speaker == LiveSpeaker.SPEAKER_A) LiveSpeaker.SPEAKER_B else LiveSpeaker.SPEAKER_A
+                    delay(350L)
+                    if (_state.value.autoTurnTaking && isLiveSessionCurrent(session) && _state.value.liveEnabled) {
+                        startLiveTranslation(nextSpeaker)
                     }
                 }
             }
@@ -659,5 +790,101 @@ class TranslationViewModel @Inject constructor(
                 current
             }
         }
+    }
+
+    fun speak(text: String, languageTag: String = _state.value.targetLanguage) {
+        if (text.isBlank()) return
+        if (_state.value.activePlayingAudioText == text) {
+            stopSpeaking()
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(activePlayingAudioText = text, liveError = null) }
+            val spoken = voiceRepository.speak(text, languageTag)
+            _state.update { current ->
+                if (current.activePlayingAudioText == text) {
+                    current.copy(
+                        activePlayingAudioText = null,
+                        liveError = if (spoken is AppResult.Error) spoken.message else current.liveError
+                    )
+                } else current
+            }
+        }
+    }
+
+    private fun cleanWhisperOutput(raw: String): String {
+        // 1. Remove bracket/asterisk annotations (Whisper special tokens like [BLANK_AUDIO], *music*).
+        val withoutBrackets = raw.replace(Regex("\\[.*?\\]|\\(.*?\\)|\\*.*?\\*"), " ").trim()
+
+        // 2. Discard if the remaining content is a single non-alphanumeric character.
+        if (withoutBrackets.length <= 1 && !withoutBrackets.all(Char::isLetterOrDigit)) {
+            return ""
+        }
+
+        val collapsed = withoutBrackets.replace(Regex("\\s+"), " ").trim()
+
+        // 3. Bag-of-Hallucinations filter.
+        // Whisper commonly hallucinates these phrases when fed near-silence or low-SNR audio.
+        // Matched case-insensitively; if the ENTIRE output is one of these phrases, discard it.
+        val lower = collapsed.lowercase()
+        if (HALLUCINATION_PHRASES.any { lower.contains(it) }) {
+            return ""
+        }
+
+        // 4. Repetition-loop detection.
+        // Split into tokens, then check whether any 1- or 2-token sequence repeats ≥4 times
+        // consecutively. This catches the "the the the the" or "Thank you. Thank you." loops.
+        val tokens = collapsed.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (tokens.size >= 4 && hasRepetitionLoop(tokens, windowSize = 1, minRepeat = 4)) return ""
+        if (tokens.size >= 6 && hasRepetitionLoop(tokens, windowSize = 2, minRepeat = 3)) return ""
+
+        return collapsed
+    }
+
+    /**
+     * Returns true if any n-gram of [windowSize] tokens repeats [minRepeat] or more times
+     * consecutively anywhere in [tokens].
+     */
+    private fun hasRepetitionLoop(tokens: List<String>, windowSize: Int, minRepeat: Int): Boolean {
+        var i = 0
+        while (i <= tokens.size - windowSize * minRepeat) {
+            val gram = tokens.subList(i, i + windowSize)
+            var repeatCount = 1
+            var j = i + windowSize
+            while (j + windowSize <= tokens.size &&
+                tokens.subList(j, j + windowSize) == gram) {
+                repeatCount++
+                j += windowSize
+            }
+            if (repeatCount >= minRepeat) return true
+            i++
+        }
+        return false
+    }
+
+    companion object {
+        /**
+         * Common Whisper hallucination phrases. These are produced when the model receives
+         * silence, very low-amplitude audio, or audio it cannot parse.
+         * All entries are lowercase; matched against the lowercased transcript.
+         */
+        private val HALLUCINATION_PHRASES = setOf(
+            // English
+            "thank you for watching",
+            "thanks for watching",
+            "please subscribe",
+            "like and subscribe",
+            "see you next time",
+            "don't forget to subscribe",
+            "music",
+            "applause",
+            "laughter",
+            // Indonesian
+            "terima kasih telah menonton",
+            "terima kasih sudah menonton",
+            "sampai jumpa",
+            "selamat tinggal",
+            "jangan lupa subscribe",
+        )
     }
 }

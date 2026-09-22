@@ -17,4 +17,10 @@ interface ImageTranslationRepository {
         sourceLanguage: String,
         targetLanguage: String
     ): AppResult<List<TranslatedBlock>>
+
+    suspend fun translateText(
+        text: String,
+        sourceLanguage: String,
+        targetLanguage: String
+    ): AppResult<String>
 }

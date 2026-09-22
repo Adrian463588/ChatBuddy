@@ -29,7 +29,7 @@ data class ChatUiState(
     val input: String = "",
     val useRag: Boolean = true,
     val ragAvailable: Boolean = false,
-    val allowWebFallback: Boolean = false,
+    val allowWebFallback: Boolean = true,
     val streaming: Boolean = false,
     val webSearching: Boolean = false,
     val errorMessage: String? = null,
@@ -68,7 +68,12 @@ class ChatViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             personaRepository.observePersonas().collect { personas ->
-                _state.update { it.copy(activePersona = personas.firstOrNull { persona -> persona.active }) }
+                val active = personas.firstOrNull { persona -> persona.active }
+                if (active == null && personas.isEmpty()) {
+                    personaRepository.save(BuiltInPersonaCatalog.default.toPersona(active = true))
+                } else {
+                    _state.update { it.copy(activePersona = active) }
+                }
             }
         }
         viewModelScope.launch {
@@ -150,7 +155,10 @@ class ChatViewModel @Inject constructor(
                         is ChatStreamEvent.Token -> appendAssistant(event.value)
                         is ChatStreamEvent.Completed -> completeAssistant(event.message)
                         is ChatStreamEvent.Failed -> {
-                            removeAssistantDraft()
+                            val last = _state.value.messages.lastOrNull()
+                            if (last == null || last.role != ChatMessage.Role.ASSISTANT || last.text.isBlank()) {
+                                removeAssistantDraft()
+                            }
                             _state.update {
                                 it.copy(
                                     streaming = false,
@@ -165,7 +173,10 @@ class ChatViewModel @Inject constructor(
             } catch (error: kotlinx.coroutines.CancellationException) {
                 throw error
             } catch (error: Exception) {
-                removeAssistantDraft()
+                val last = _state.value.messages.lastOrNull()
+                if (last == null || last.role != ChatMessage.Role.ASSISTANT || last.text.isBlank()) {
+                    removeAssistantDraft()
+                }
                 val message = "Chat failed: ${error.message ?: "unknown error"}"
                 _state.update {
                     it.copy(

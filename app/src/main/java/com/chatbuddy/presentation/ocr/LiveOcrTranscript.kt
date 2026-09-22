@@ -9,6 +9,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -26,6 +32,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.chatbuddy.domain.model.OcrResult
 import com.chatbuddy.domain.model.TranslatedBlock
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import com.chatbuddy.presentation.translate.TranslationUiState
 
 @Composable
@@ -33,22 +43,35 @@ internal fun LiveOcrTranscript(
     result: OcrResult?,
     translationState: TranslationUiState,
     translatedBlocks: List<TranslatedBlock> = emptyList(),
+    fullTranslation: String? = null,
     translationProcessing: Boolean = false,
     translationError: String? = null,
     translationProvider: String?,
+    isLiveTranslateEnabled: Boolean = true,
+    isFrozen: Boolean = false,
+    onToggleLiveTranslate: () -> Unit = {},
     onDownloadTranslation: () -> Unit,
     onStopCamera: () -> Unit,
     onCapture: () -> Unit = {},
+    onResumeCamera: () -> Unit = {},
+    onSpeakTranslation: (String) -> Unit = {},
+    onCopyText: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val transcript = result?.text?.trim().orEmpty()
-    val blockTranslation = translatedBlocks.joinToString(" ") { it.translatedText }.trim()
+    val blockTranslation = translatedBlocks
+        .filter { it.translatedText.isNotBlank() && it.translatedText.trim() != it.source.text.trim() }
+        .joinToString(" ") { it.translatedText }
+        .trim()
     val directTranslation = translationState.result
         ?.takeIf { translationState.sourceText.trim() == transcript }
         ?.text
         ?.trim()
         .orEmpty()
-    val translation = blockTranslation.ifBlank { directTranslation }
+    val translation = fullTranslation?.takeIf { it.isNotBlank() && it.trim() != transcript }
+        ?: blockTranslation.takeIf { it.isNotBlank() && it != transcript }
+        ?: directTranslation.takeIf { it.isNotBlank() && it != transcript }
+        .orEmpty()
     val accessibilityText = if (transcript.isBlank()) {
         "Live OCR transcript: scanning"
     } else {
@@ -75,7 +98,7 @@ internal fun LiveOcrTranscript(
             BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                 if (maxWidth < 360.dp) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        LiveTranscriptStatus(transcript)
+                        LiveTranscriptStatus(transcript, isLiveTranslateEnabled, onToggleLiveTranslate)
                         TextButton(
                             onClick = onStopCamera,
                             modifier = Modifier.fillMaxWidth()
@@ -90,6 +113,8 @@ internal fun LiveOcrTranscript(
                     ) {
                         LiveTranscriptStatus(
                             transcript = transcript,
+                            isLiveTranslate = isLiveTranslateEnabled,
+                            onToggleLiveTranslate = onToggleLiveTranslate,
                             modifier = Modifier.weight(1f)
                         )
                         TextButton(onClick = onStopCamera) {
@@ -98,12 +123,28 @@ internal fun LiveOcrTranscript(
                     }
                 }
             }
-            OutlinedButton(onClick = onCapture, modifier = Modifier.fillMaxWidth()) {
-                Text("Capture and translate")
+
+            if (isFrozen) {
+                Button(
+                    onClick = onResumeCamera,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(Icons.Outlined.PhotoCamera, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Resume camera (Live scanning)")
+                }
+            } else {
+                OutlinedButton(onClick = onCapture, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Outlined.PhotoCamera, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Freeze / Capture frame")
+                }
             }
+
             if (transcript.isBlank()) {
                 Text(
-                    text = "Point the camera at text",
+                    text = "Point camera at text for Google Lens translation",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -111,17 +152,31 @@ internal fun LiveOcrTranscript(
                 Text(
                     text = transcript,
                     style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 4,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
                 when {
-                    translationProcessing -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    translationProcessing && translation.isBlank() -> {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
                     translation.isNotBlank() -> {
-                        Text(
-                            text = "Translation",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Translation (${translationState.targetLanguage.uppercase()})",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { onCopyText(translation) }) {
+                                Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy translation")
+                            }
+                            IconButton(onClick = { onSpeakTranslation(translation) }) {
+                                Icon(Icons.AutoMirrored.Outlined.VolumeUp, contentDescription = "Speak translation")
+                            }
+                        }
                         Text(
                             text = translation,
                             style = MaterialTheme.typography.bodySmall,
@@ -154,7 +209,7 @@ internal fun LiveOcrTranscript(
                         !translationState.modelChecking &&
                         !translationState.modelDownloading -> {
                         Text(
-                            text = "Translation pack is not ready",
+                            text = "Offline translation model not ready",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -174,6 +229,8 @@ internal fun LiveOcrTranscript(
 @Composable
 private fun LiveTranscriptStatus(
     transcript: String,
+    isLiveTranslate: Boolean,
+    onToggleLiveTranslate: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -181,14 +238,16 @@ private fun LiveTranscriptStatus(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "Live transcript",
+            text = "Google Lens",
             style = MaterialTheme.typography.labelLarge
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = if (transcript.isBlank()) "Scanning" else "Detected",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.secondary
+        FilterChip(
+            selected = isLiveTranslate,
+            onClick = onToggleLiveTranslate,
+            label = {
+                Text(if (isLiveTranslate) "Live AR" else "Detect only")
+            }
         )
     }
 }

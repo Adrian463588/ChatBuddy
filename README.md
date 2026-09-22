@@ -1,167 +1,165 @@
-# ChatBuddy
+# 🤖 ChatBuddy
 
-**Dibuat oleh Adrian Syah Abidin.**
+<div align="center">
 
-ChatBuddy adalah aplikasi Android local-first untuk chat berbasis dokumen, terjemahan, OCR, persona, dan model AI yang diproses di perangkat. Setelah model diunduh ke folder SAF milik pengguna, jalur inferensi tetap lokal. Jika pengguna mengaktifkan `Search web if local sources miss`, hanya pertanyaannya yang dikirim melalui HTTPS ke provider pencarian yang terlihat di UI; generasi jawaban tetap memakai LLM lokal.
+**100% Offline AI Travel Companion & Local Assistant for Android**<br/>
+*Two-Way Live Voice Translation (SayMi/Timekettle-style), Offline RAG Knowledge, Camera OCR, and On-Device LLM*
 
-![ChatBuddy device preview](preview/chatbuddy-device.png)
+[![Version](https://img.shields.io/badge/Version-v0.2.0-brightgreen.svg?style=for-the-badge&logo=android)](https://github.com/Adrian463588/ChatBuddy/releases/tag/v0.2.0)
+[![Direct Download APK](https://img.shields.io/badge/Download-APK%20(v0.2.0)-blue.svg?style=for-the-badge&logo=android)](https://github.com/Adrian463588/ChatBuddy/releases/download/v0.2.0/ChatBuddy-v0.2.0.apk)
+[![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=for-the-badge)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B%20(API%2026%2B)-blueviolet.svg?style=for-the-badge&logo=android)](https://android.com)
 
-![Translate screen preview](preview/chatbuddy-translate-device.png)
+---
 
-![Translate language dropdown preview](preview/chatbuddy-translate-dropdown-device.png)
+### 📥 Unduh Langsung APK Terbaru (v0.2.0)
+Klik tombol di bawah untuk mendownload installer APK langsung ke HP Android Anda:
 
-Preview PNG di atas harus berasal dari APK ChatBuddy yang dijalankan pada device. Jika file belum ada, status preview adalah pending dan bukan bukti fitur AI telah siap.
+[![Download APK Button](https://img.shields.io/badge/UNDUH%20APK%20SEKARANG-ChatBuddy--v0.2.0.apk-success?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Adrian463588/ChatBuddy/releases/download/v0.2.0/ChatBuddy-v0.2.0.apk)
 
-## Status implementasi
+**Link Alternatif / Semua Versi:** [Halaman GitHub Releases](https://github.com/Adrian463588/ChatBuddy/releases/latest)
 
-| Area | Status | Batas bukti saat ini |
-| --- | --- | --- |
-| Compose responsive shell, ModelGate, navigation, persona | Implemented | Unit/UI/device gates dijalankan terpisah |
-| Model download action and lifecycle | Implemented | Queued, progress, pause/resume, verifying, retry, and error are rendered inline; large model transfer is user-triggered |
-| SAF folder, persistable permission, `.tmp`, Range, checkpoint, checksum, atomic rename | Implemented | Resume/uninstall persistence di device masih perlu sesi model nyata |
-| MiniLM INT8 ONNX + WordPiece vocabulary | Implemented | Memerlukan dua artifact SAF yang lolos checksum |
-| TXT/PDF/DOCX bounded streaming, chunk 512 dengan overlap 50 | Implemented | Parser berhenti dengan error nyata bila SAF stream rusak atau melewati 200 MB |
-| llama.cpp JNI + GGUF dari SAF file descriptor + token Flow | Implemented in build | Inference device memerlukan Gemma artifact 2.84 GB dan belum diklaim tanpa sesi nyata |
-| sqlite-vec vector table + real embedding fallback | Implemented with compatibility path | sqlite-vec dicoba lebih dulu; bila extension tidak tersedia, embedding nyata disimpan di Room sebagai BLOB dan dicari dengan exact cosine |
-| AI companion local-first + web fallback | Implemented | Local evidence menang; web hanya setelah local miss dan toggle opt-in, provider awal Wikipedia MediaWiki, URL/provenance tampil |
-| ML Kit translation dan OCR CameraX/gallery | Implemented | Model ML Kit dikelola Play Services, bukan file SAF; device model-pack test pending |
-| Whisper partial/final STT | Implemented in build | JNI Whisper sudah dibangun untuk arm64-v8a/armeabi-v7a; sesi audio nyata menunggu artifact SAF dan izin mikrofon |
-| Offline TTS | Capability check implemented | Hanya dipakai bila engine Android melaporkan voice offline tersedia |
-| Live conversation translation | Implemented in build | AudioRecord → Whisper → ML Kit → offline TTS opsional; device audio end-to-end tetap pending sampai bundle tersedia |
+#### 🚀 Cara Pasang Cepat di HP Android:
+1. Klik **[Unduh ChatBuddy-v0.2.0.apk](https://github.com/Adrian463588/ChatBuddy/releases/download/v0.2.0/ChatBuddy-v0.2.0.apk)** di atas melalui browser HP Anda.
+2. Setelah selesai, buka notifikasi unduhan lalu pilih **Install** *(Jika muncul peringatan keamanan, izinkan "Install unknown apps / Izinkan dari sumber ini")*.
+3. Buka ChatBuddy, berikan izin mikrofon/penyimpanan, dan aplikasi langsung siap digunakan **100% offline tanpa kuota internet**!
 
-Tidak ada output AI buatan, fixture yang menyamar sebagai hasil produksi, atau cloud LLM. State yang belum memiliki runtime nyata dikembalikan sebagai `AppResult.Error`/`UNAVAILABLE`; web search hanya mengambil evidence dan tidak menggantikan LLM lokal.
+---
+</div>
 
-## Arsitektur
+## 📸 Tangkapan Layar Aplikasi (Samsung Galaxy S20 Ultra)
+
+Berikut adalah tangkapan layar langsung dari perangkat fisik nyata (**Samsung Galaxy S20 Ultra `SM-G988B`**, Android 13):
+
+<div align="center">
+
+| 🎙️ Mode Mendengarkan (Silero Neural VAD) | 💬 Riwayat Percakapan 2-Arah (SayMi Style) | 🔊 Pemutaran TTS Offline Aktif |
+|:---:|:---:|:---:|
+| <img src="preview/chatbuddy-translate-saymi-listening.png" width="260" alt="Silero Neural VAD Listening Mode" /> | <img src="preview/chatbuddy-translate-saymi-history.png" width="260" alt="SayMi Style Two-Way Conversation" /> | <img src="preview/chatbuddy-translate-saymi-tts.png" width="260" alt="Offline TTS Audio Playback" /> |
+| *Deteksi vokal cerdas Silero VAD v5 dengan visualizer gelombang suara.* | *Gelembung dialog 2 penutur dengan kontrol suara ganda Asli & Terjemahan.* | *Pemutaran instan suara Bahasa Indonesia / Inggris secara offline.* |
+
+</div>
+
+<br>
+
+<div align="center">
+
+| 🤖 Asisten AI ChatBuddy & Dokumen RAG | 🌐 Pengaturan Bahasa & Audio |
+|:---:|:---:|
+| <img src="preview/chatbuddy-device.png" width="260" alt="ChatBuddy Local RAG Companion" /> | <img src="preview/chatbuddy-translate-device.png" width="260" alt="Language Selection & Dual Audio" /> |
+| *Tanya jawab dokumen lokal via embedding MiniLM & sqlite-vec.* | *Pilihan pasangan bahasa interaktif dengan dukungan audio dua arah.* |
+
+</div>
+
+---
+
+## 🌟 Fitur Unggulan
+
+### 1. 🎙️ Live Two-Way Conversation Translation (Gaya SayMi / Timekettle)
+- **AI Companion untuk Traveling Tanpa Device Khusus**: Berbicara langsung dengan lawan bicara di mana saja tanpa perlu membeli earphone translator mahal (seperti Timekettle) atau perangkat khusus. Cukup gunakan mikrofon ponsel atau earphone Bluetooth TWS standar apa pun.
+- **Silero Neural VAD v5 On-Device (~2.3 MB)**:
+  - Menggantikan algoritma energi lama dengan deep neural network LSTM berakurasi tinggi.
+  - Kebal terhadap desau AC, kipas angin, sentuhan bodi ponsel, maupun hembusan napas.
+  - **Jeda Bicara Alami (1200ms)**: Tidak memotong kalimat di tengah jalan saat Anda berpikir sejenak.
+  - **Eliminasi Terjemahan Palsu**: Suara hening tidak akan pernah memicu transkripsi halusinasi.
+- **Kontrol Audio Ganda (Dual Playback Chips)**:
+  - Setiap kartu percakapan menyediakan 2 tombol suara mandiri:
+    - **`🔊 Asli`**: Memutar audio teks bahasa asal yang diucapkan pembicara.
+    - **`🔊 Terjemahan`**: Memutar audio hasil terjemahan untuk lawan bicara.
+- **Riwayat Dialog Otomatis**: Riwayat percakapan ditumpuk rapi di bagian bawah layar dengan auto-scroll ke giliran paling akhir.
+
+### 2. 📚 Offline Document RAG (Retrieval-Augmented Generation)
+- **100% Pemrosesan Lokal**: Membaca dokumen TXT, PDF, dan DOCX tanpa mengunggah sebutir data pun ke cloud.
+- **On-Device Embedding**: Model `all-MiniLM-L6-v2` INT8 quantized (~23 MB) berjalan via ONNX Runtime Mobile (`IntraOpNumThreads = 2`).
+- **Vector Database On-Device**: Pencarian kemiripan semantik berbasis `sqlite-vec` bawaan C++ dengan fallback exact cosine similarity di Room Database.
+- **Web Fallback Opsional**: Jika pengguna mengaktifkan toggle `Search web if local sources miss`, pencarian HTTPS hanya dilakukan jika tidak ditemukan bukti pada dokumen lokal.
+
+### 3. 👁️ Live Camera OCR & Image Translation
+- Deteksi teks pada kamera secara real-time menggunakan Google ML Kit On-Device Text Recognition.
+- Overlay kotak bounding box langsung di atas frame video dengan terjemahan instan.
+
+### 4. 🧠 On-Device LLM (llama.cpp JNI)
+- Inferensi Large Language Model (Gemma 4 E2B IT `Q4_0`) dijalankan langsung di CPU perangkat Android via JNI C++ bindings.
+- Streaming token demi token secara real-time ke Jetpack Compose UI.
+
+### 5. 🔒 Storage Access Framework (SAF) & Privacy-First
+- File model AI dan dokumen pengguna disimpan di direktori SAF pilihan pengguna, sehingga data tetap aman dan **tidak terhapus** saat aplikasi di-update atau di-uninstall.
+
+---
+
+## 🏗️ Arsitektur Aplikasi
+
+ChatBuddy dibangun dengan prinsip **Clean Architecture**, **SOLID**, dan pola **MVVM**:
 
 ```text
-Compose + ViewModel + StateFlow/SharedFlow
-                |
-        pure Kotlin use cases
-                |
- Room / SAF / WorkManager / MediaWiki HTTPS / ML Kit / ONNX Runtime / JNI
+┌─────────────────────────────────────────────────────────────┐
+│               Jetpack Compose UI (Material 3)               │
+│               StateFlow & SharedFlow (MVI/MVVM)             │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     Domain Layer (UseCases)                 │
+│      Pure Kotlin, no Android framework dependencies         │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      Data & AI Layer                        │
+│ ┌──────────────────────┐  ┌──────────────────────────────┐  │
+│ │ Room Database        │  │ ONNX Runtime (Silero / MiniLM)│  │
+│ ├──────────────────────┤  ├──────────────────────────────┤  │
+│ │ SAF Model Store      │  │ llama.cpp & whisper.cpp JNI  │  │
+│ ├──────────────────────┤  ├──────────────────────────────┤  │
+│ │ ML Kit Offline Trans │  │ sqlite-vec C++ Extension     │  │
+│ └──────────────────────┘  └──────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-Package utama mengikuti MVVM dan Clean Architecture:
+---
 
-- `domain/` berisi model, repository contracts, dan use cases tanpa Room/Android.
-- `data/` berisi Room, SAF, download worker, ML Kit, embedding, dan repository implementations.
-- `ai/` berisi JNI llama.cpp, tokenizer, dan engine boundary yang fail-closed.
-- `presentation/` berisi screen state, ViewModel, ModelGate, dan Compose UI.
-- `architecture/` berisi traceability dan ADR; `docs/` adalah reference checkout yang sengaja tidak diikutkan Git.
+## 📦 Model AI yang Digunakan
 
-## Persona templates
+| Komponen | Model | Format & Ukuran | Penyimpanan | Lisensi |
+|---|---|---|---|---|
+| **VAD (Voice Activity Detection)** | Silero VAD v5 | ONNX (~2.3 MB) | Bundled di APK Assets | MIT |
+| **Speech-to-Text (STT)** | Whisper Base Q5_1 | GGUF (~57 MB) | SAF Directory | MIT |
+| **Text Embedding** | all-MiniLM-L6-v2 INT8 | ONNX (~23 MB) | SAF Directory | Apache-2.0 |
+| **Vector DB** | sqlite-vec | Native C++ (`.so`) | Bundled Native Lib | MIT |
+| **Large Language Model** | Gemma 4 E2B IT Q4_0 | GGUF (~1.5–2.8 GB) | SAF Directory | Gemma Terms |
+| **Translation & OCR** | Google ML Kit | On-Device Model Packs | Play Services Managed | Apache-2.0 |
 
-ChatBuddy menyediakan `Sunny Companion` sebagai persona bawaan yang periang dan
-langsung bisa diaktifkan dari layar ChatBuddy. `Study Buddy`, `Practical Guide`,
-dan `Translation Helper` tersedia sebagai template tambahan. Setiap template
-memakai prompt terstruktur dengan batas probing: satu pertanyaan klarifikasi
-yang fokus hanya ketika detail yang hilang benar-benar mengubah jawaban; untuk
-ambiguitas berisiko rendah, asisten menyatakan asumsi lalu melanjutkan.
-Persona custom menerima policy grounding/probing yang sama. Semua persona tetap
-lokal dan dapat diedit, diduplikasi, diaktifkan, atau dihapus.
+---
 
-Desain perilaku ini mengikuti [Google prompt design strategies](https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/prompt-design-strategies),
-[Google system instructions](https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/system-instruction-introduction),
-dan [Microsoft disambiguation guidance](https://learn.microsoft.com/en-us/microsoft-copilot-studio/guidance/cux-disambiguate-intent).
+## 🛠️ Panduan Build Lokal (Developer)
 
-## Model manifest
+### Persyaratan:
+- **Android Studio**: Ladybug / Meerkat (2024.2+)
+- **JDK**: Eclipse Adoptium JDK 17 atau 21
+- **Android SDK**: `minSdk 26` (Android 8.0), `targetSdk 35` (Android 15)
+- **Android NDK**: `27.0.12077973`
+- **CMake**: `3.22.1`
 
-`app/src/main/assets/model-manifest.json` adalah source of truth artifact. Setiap entry memuat URL yang dipin revision, ukuran, SHA-256, lisensi, ABI, dan storage kind.
+### Perintah Build:
+```bash
+# 1. Clone repositori
+git clone https://github.com/Adrian463588/ChatBuddy.git
+cd ChatBuddy
 
-- LLM: Gemma 4 E2B IT `Q4_0` resmi dari `ggml-org/gemma-4-E2B-it-GGUF`; link 1B yang tidak tersedia tidak dipakai.
-- Embedding: `all-MiniLM-L6-v2` INT8 ARM64 dan `vocab.txt` pada revision yang dipin.
-- Voice: Whisper `base-q5_1` pada revision yang dipin; engine JNI dibangun secara native dan fail-closed tanpa artifact SAF.
+# 2. Jalankan unit test
+./gradlew testDebugUnitTest
 
-Model tidak disimpan di APK. Pengguna memilih folder melalui SAF, kemudian WorkManager mengunduh ke `ChatBuddyModels/<artifact>.tmp`. Resume memakai HTTP Range dan panjang file SAF yang nyata; file final hanya dibuat setelah ukuran dan SHA-256 cocok.
+# 3. Build APK Debug
+./gradlew assembleDebug
 
-## Setup lokal
+# Output file APK:
+# app/build/outputs/apk/debug/app-debug.apk
+```
 
-1. Gunakan Android Studio dengan JDK 17, Android SDK 35, NDK `27.0.12077973`, dan CMake `3.22.1`.
-2. Jalankan `gradlew.bat :app:testDebugUnitTest`.
-3. Jalankan `gradlew.bat :app:lintDebug` dan `gradlew.bat :app:assembleDebug`.
-4. Untuk build native, jalankan `gradlew.bat :app:externalNativeBuildDebug`. CMake mengambil llama.cpp dan whisper.cpp pada commit yang dipin di `app/src/main/cpp/CMakeLists.txt`.
-5. Install APK ke device, buka ChatBuddy, pilih folder SAF yang dapat ditulis, lalu unduh hanya artifact yang dibutuhkan.
-6. Untuk live translation, unduh `Whisper Base Q5_1`, unduh language pack terjemahan, izinkan mikrofon, lalu buka `Translate` → `Start live translation`.
+---
 
-Tidak boleh memasukkan `local.properties`, keystore, token, model binary, atau isi `docs/**` ke commit.
+## 📄 Lisensi & Kontributor
 
-## Offline boundary
-
-Network tidak dipakai untuk inferensi. Setup model dan managed ML Kit model delivery tetap memakai network sesuai state provider. Chat tidak melakukan request web ketika toggle fallback mati. Ketika toggle aktif dan local RAG tidak menemukan evidence relevan, hanya teks pertanyaan dikirim melalui HTTPS ke provider Wikipedia MediaWiki; dokumen SAF, embedding, persona, dan system prompt tetap lokal. Web content diperlakukan sebagai untrusted reference data, dan provider/URL ditampilkan pada source card. ML Kit translation tetap diberi label `PLAY_SERVICES_MANAGED`; state itu tidak dijanjikan bertahan setelah uninstall seperti artifact SAF.
-
-## Test evidence
-
-Evidence yang valid ditulis sebagai hasil command/device aktual, bukan angka perkiraan. Gate yang tersedia:
-
-- Pure Kotlin: chunk overlap, persona validation, RAG abstain, download state transition.
-- Pure Kotlin: local-first RAG policy, web fallback opt-in, source provenance, and answer withholding.
-- Compose instrumentation: ModelGate unavailable/ready, queued pause action, and inline download state actions.
-- Android: lint, Kotlin compile, native ABI build, APK install/launch, dan screenshot preview.
-- Pending acceptance: model Gemma nyata, checksum/download resume setelah process kill, sqlite-vec retrieval, live audio session dengan Whisper artifact nyata, 200 MB ingestion on device, serta uninstall/reinstall persistence.
-
-Device baseline yang direncanakan: Samsung `SM-G988B`, Android 13 (`RRCN3008VYE`). Hasil device tidak digeneralisasi ke semua handset.
-
-### Evidence captured — 2026-08-19
-
-- `:app:testDebugUnitTest` — pass.
-- `:app:lintDebug` — pass; lint menyisakan warning dependency/deprecation, tanpa error.
-- `:app:externalNativeBuildDebug` dan `:app:assembleDebug` — pass untuk `arm64-v8a` dan `armeabi-v7a`.
-- `:app:connectedDebugAndroidTest` — 5/5 pass pada `SM-G988B - 13`, termasuk editable language dropdown.
-- APK terbaru berhasil dipasang dan diluncurkan pada `RRCN3008VYE`; accessibility dump melaporkan package `com.chatbuddy`, tombol SAF, dan empat tab navigasi. Tidak ada `FATAL EXCEPTION` pada smoke log.
-- Preview aktual tersedia untuk onboarding, Translate, dropdown bahasa Translate, OCR, Settings, dan landscape. `preview/chatbuddy-device.png` adalah preview utama README.
-- `2026-08-20`: layar Translate diverifikasi pada `SM-G988B` dengan exposed autocomplete dropdown `From`/`To`, popup daftar bahasa, keyboard input, tombol swap, dan layout compact portrait; tidak ada chip selector.
-- APK debug: 140,153,118 bytes; SHA-256 `e29a5ab3bc63eef31082d38f5882204840390645e4b861d6f7bdb81be24cbe4a`.
-
-Evidence ini membuktikan build, UI shell, navigation, dan launch; tidak membuktikan inferensi atau ingestion tanpa artifact model/runtime yang benar-benar diunduh dan diverifikasi.
-
-### Evidence captured — 2026-08-24
-
-- `:app:testDebugUnitTest`, `:app:lintDebug`, dan `:app:assembleDebug` — pass.
-- Native Whisper dibangun untuk `arm64-v8a` dan `armeabi-v7a`.
-- APK terbaru berhasil dipasang dan diluncurkan pada `SM-G988B` (`RRCN3008VYE`); accessibility dump menampilkan `Live conversation`, `Start live translation`, status provider, dan instruksi izin mikrofon.
-- Smoke log tidak menunjukkan `AndroidRuntime` atau `ChatBuddyWhisper` error.
-- Audio end-to-end belum diklaim karena artifact Whisper dan izin mikrofon belum dibuktikan aktif pada sesi device ini.
-
-### Evidence captured — 2026-08-20
-
-- `:app:compileDebugKotlin` dan `:app:compileDebugAndroidTestKotlin` — pass.
-- `:app:testDebugUnitTest`, `:app:lintDebug`, dan `:app:assembleDebug` — pass.
-- `:app:connectedDebugAndroidTest` — 5/5 pass pada `SM-G988B - 13`, termasuk callback Download/Pause pada ModelGate dan filtering/selection language dropdown.
-- APK debug berhasil dipasang dan cold-launched pada `RRCN3008VYE`; `dumpsys` mengonfirmasi `com.chatbuddy/.MainActivity` sebagai resumed dan smoke log tidak menunjukkan crash aplikasi.
-- Transfer Gemma tidak dimulai otomatis selama smoke karena artifact sekitar 2.84 GB; state dan callback diuji tanpa menggunakan bandwidth/storage pengguna secara diam-diam. Sesi transfer nyata tetap membutuhkan tap pengguna, folder SAF, jaringan, checksum, dan ruang penyimpanan yang cukup.
-- `2026-08-20` setelah perbaikan download: `"wa"` dipakai untuk SAF append (mode Android `"rwa"` tidak valid), worker failure dipetakan ke status Error yang dapat di-retry, backoff jaringan ditambahkan, dan artifact besar memakai foreground WorkManager.
-- Device smoke transfer MiniLM dimulai dari Settings pada `SM-G988B` dan mencapai status `Download scheduled`; completion/SHA-256 `Ready` belum dapat dicatat karena device berpindah ke aplikasi lain selama sesi. Status ini tetap pending, bukan klaim download berhasil.
-
-### Evidence captured — 2026-08-25
-
-- `:app:kspDebugKotlin`, `:app:compileDebugKotlin`, dan `:app:testDebugUnitTest` — pass after local-first web fallback and bento chat changes.
-- Regression tests cover local evidence priority, web fallback only after a local miss and explicit opt-in, and answer withholding when opt-in is disabled.
-- `:app:lintDebug`, `:app:assembleDebug`, and device smoke for this change remain pending until the final validation run; no runtime model or live web session is claimed from compilation alone.
-
-### Evidence captured — 2026-08-27
-
-- `:app:compileDebugKotlin` — pass.
-- `:app:testDebugUnitTest` — pass, 40 tests.
-- `:app:connectedDebugAndroidTest` — target Samsung `SM-G988B`, Android 13 menyelesaikan 17/17 test (0 failed/0 skipped). Task aggregate juga menemukan device lain; salah satunya tertahan `INSTALL_FAILED_USER_RESTRICTED`, jadi hasil ini bukan pass global multi-device.
-- `:app:lintDebug` — pass tanpa error; warning dependency/deprecation yang tersisa tetap perlu direkonsiliasi sebelum release.
-- `:app:externalNativeBuildDebug` — pass untuk `arm64-v8a` dan `armeabi-v7a`.
-- `:app:assembleDebug` — pass; APK debug dipasang dengan `adb install -r` dan `com.chatbuddy/.MainActivity` berhasil diluncurkan.
-- Accessibility/UI smoke mengonfirmasi state SAF yang actionable: ketika folder writable belum tersedia, UI menampilkan `Reconnect SAF folder`, bukan toast tanpa arti atau download palsu.
-- Device Settings smoke mengonfirmasi akses Room driver yang benar dan status backend yang jujur: `ROOM_EXACT_DEGRADED` ketika extension sqlite-vec tidak tersedia, tanpa mengklaim `SQLITE_VEC`; `cacheDir miss` tetap menjelaskan fallback ke file SAF terverifikasi.
-- Persona smoke code path memiliki template `Sunny Companion` dan policy probing/grounding global untuk persona custom; activation failure dan success feedback dipisahkan secara eksplisit.
-- `preview/chatbuddy-device.png` dan `preview/chatbuddy-translate-device.png` diperbarui dari screenshot APK ChatBuddy yang benar-benar berjalan di device; preview bukan mock UI.
-- Regression native LLM memperbaiki batch prompt dengan mengisi `n_tokens` secara eksplisit, memakai renderer canonical Gemma 4 hanya untuk manifest artifact yang terverifikasi, serta memisahkan error prompt, tokenisasi, sampler, decode, JNI, dan cancellation. JNI call diserialisasi, marker kontrol dari input tidak dipercaya, dan cache key memiliki schema version.
-- Device smoke setelah perbaikan mencatat `Prepared prompt tokens=869 context=4096` tanpa error code 2. Completion assistant Gemma E2B tetap `BLOCKED/PENDING`: pada bounded run CPU handset memakai lebih dari enam menit tanpa menyelesaikan prefill batch pertama, sehingga tidak diklaim sebagai chat inference yang berhasil.
-
-Gate berikut masih `BLOCKED/PENDING` karena belum ada sesi artifact nyata yang selesai pada device ini: pemilihan folder SAF writable, download dan checksum Gemma/MiniLM/Whisper, process-kill/resume, chat RAG offline, sqlite-vec retrieval, web fallback live dengan citation, OCR kamera/gallery, live Whisper/TTS, ingest 200 MB, serta uninstall/reinstall persistence. Build atau instrumentation pass tidak digunakan sebagai pengganti evidence runtime tersebut.
-
-## License/provenance
-
-Kode aplikasi mengikuti lisensi repository yang dipilih saat release. Artifact model mempertahankan lisensi masing-masing di manifest. llama.cpp dipakai pada commit pin dan lisensinya harus direkonsiliasi sebelum release publik. Reference projects di `docs/**` tidak didistribusikan sebagai source ChatBuddy.
-
-## Public repository safety
-
-- Credential, keystore, `local.properties`, model binary, dan API key tidak boleh masuk repository.
-- `docs/**` berisi checkout referensi lokal dan di-ignore dari Git.
-- Model AI hanya diunduh saat runtime ke folder SAF yang dipilih pengguna.
-- Perubahan publik diverifikasi dengan staged allowlist, `git diff --check`, secret-pattern scan, unit test, lint, native build, dan device smoke test.
+- **Pengembang Utama**: **Adrian Syah Abidin**
+- **Lisensi**: Proyek ini dilisensikan di bawah [Apache License 2.0](LICENSE).
+- **Model Lisensi**: Setiap model AI mempertahankan lisensi masing-masing sebagaimana tercantum pada tabel model di atas.

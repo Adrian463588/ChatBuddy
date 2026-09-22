@@ -25,6 +25,7 @@ service-account*.json
 *.gguf
 *.bin
 *.onnx
+!app/src/main/assets/silero_vad.onnx
 *.tflite
 *.safetensors
 .native-src/
@@ -36,6 +37,12 @@ preview/
 !preview/chatbuddy-device.png
 !preview/chatbuddy-translate-device.png
 !preview/chatbuddy-translate-dropdown-device.png
+!preview/chatbuddy-translate-saymi-listening.png
+!preview/chatbuddy-translate-saymi-history.png
+!preview/chatbuddy-translate-saymi-tts.png
 
 # Supplied reference projects are read-only and never part of the product repo.
 /docs/
+
+# Adb dumps and temporary test files
+dump*.xml

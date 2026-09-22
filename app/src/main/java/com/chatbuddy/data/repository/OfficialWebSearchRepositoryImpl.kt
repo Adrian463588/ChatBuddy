@@ -17,69 +17,75 @@ import javax.inject.Singleton
 @Singleton
 class OfficialWebSearchRepositoryImpl @Inject constructor(
     private val mediaWiki: MediaWikiWebSearchRepository,
+    private val bing: BingWebSearchRepository,
     private val brave: BraveWebSearchRepository
 ) : OfficialWebSearchRepository {
     private val _status = MutableStateFlow(initialStatus())
     override val status: StateFlow<List<WebProviderStatus>> = _status.asStateFlow()
 
     override suspend fun search(request: WebSearchRequest): AppResult<List<WebEvidence>> {
+        // 1. If Brave is explicitly configured by the user, try it first
+        val braveStatus = brave.status()
+        if (braveStatus.availability == WebProviderAvailability.AVAILABLE) {
+            when (val braveResult = brave.search(request)) {
+                is AppResult.Success -> {
+                    if (braveResult.data.isNotEmpty()) return braveResult
+                }
+                is AppResult.Error -> Unit
+                AppResult.Loading -> Unit
+            }
+        }
+
+        // 2. Query Wikipedia (ID + EN) for reliable, encyclopedic facts
         val wiki = mediaWiki.search(request.query, request.limit)
-        when (wiki) {
-            is AppResult.Success -> {
+        if (wiki is AppResult.Success && wiki.data.isNotEmpty()) {
+            _status.value = _status.value.replaceStatus(
+                WebProviderStatus(
+                    WebProviderId.MEDIAWIKI,
+                    WebProviderAvailability.AVAILABLE,
+                    "Wikipedia verified knowledge"
+                )
+            )
+            return wiki
+        }
+
+        // 3. Fallback to web search via Bing scraper, verifying relevance
+        val bingResult = bing.search(request.query, request.limit)
+        if (bingResult is AppResult.Success && bingResult.data.isNotEmpty()) {
+            val queryWords = request.query.lowercase().split(" ", "?", "!", ",", ".")
+                .map { it.trim() }
+                .filter { it.length >= 3 }
+            val relevant = bingResult.data.filter { item ->
+                val text = (item.title + " " + item.content).lowercase()
+                queryWords.isEmpty() || queryWords.any { text.contains(it) }
+            }
+            if (relevant.isNotEmpty()) {
                 _status.value = _status.value.replaceStatus(
                     WebProviderStatus(
                         WebProviderId.MEDIAWIKI,
                         WebProviderAvailability.AVAILABLE,
-                        "Wikipedia official API"
+                        "Web search & deep scraping active"
                     )
                 )
-                if (wiki.data.isNotEmpty()) return wiki
+                return AppResult.Success(relevant)
             }
-            is AppResult.Error -> {
-                _status.value = _status.value.replaceStatus(
-                    WebProviderStatus(
-                        WebProviderId.MEDIAWIKI,
-                        if (wiki.cause is IOException) {
-                            WebProviderAvailability.OFFLINE
-                        } else {
-                            WebProviderAvailability.UNAVAILABLE
-                        },
-                        wiki.message
-                    )
-                )
-            }
-            AppResult.Loading -> Unit
         }
 
-        val braveStatus = brave.status()
-        _status.value = _status.value.replaceStatus(braveStatus)
-        if (braveStatus.availability != WebProviderAvailability.AVAILABLE) return wiki
-
-        return when (val braveResult = brave.search(request)) {
-            is AppResult.Success -> {
-                _status.value = _status.value.replaceStatus(
-                    braveStatus.copy(
-                        availability = WebProviderAvailability.AVAILABLE,
-                        detail = "Official Brave Search API"
-                    )
+        if (wiki is AppResult.Error) {
+            _status.value = _status.value.replaceStatus(
+                WebProviderStatus(
+                    WebProviderId.MEDIAWIKI,
+                    if (wiki.cause is IOException) {
+                        WebProviderAvailability.OFFLINE
+                    } else {
+                        WebProviderAvailability.UNAVAILABLE
+                    },
+                    wiki.message
                 )
-                if (braveResult.data.isNotEmpty()) braveResult else wiki
-            }
-            is AppResult.Error -> {
-                _status.value = _status.value.replaceStatus(
-                    braveStatus.copy(
-                        availability = if (braveResult.cause is IOException) {
-                            WebProviderAvailability.OFFLINE
-                        } else {
-                            WebProviderAvailability.UNAVAILABLE
-                        },
-                        detail = braveResult.message
-                    )
-                )
-                if (wiki is AppResult.Error) braveResult else wiki
-            }
-            AppResult.Loading -> wiki
+            )
         }
+
+        return if (wiki is AppResult.Success) wiki else bingResult
     }
 
     private fun List<WebProviderStatus>.replaceStatus(status: WebProviderStatus): List<WebProviderStatus> =
@@ -90,7 +96,7 @@ class OfficialWebSearchRepositoryImpl @Inject constructor(
             WebProviderStatus(
                 WebProviderId.MEDIAWIKI,
                 WebProviderAvailability.AVAILABLE,
-                "Wikipedia official API"
+                "Web search and Wikipedia active"
             ),
             WebProviderStatus(
                 WebProviderId.BRAVE,

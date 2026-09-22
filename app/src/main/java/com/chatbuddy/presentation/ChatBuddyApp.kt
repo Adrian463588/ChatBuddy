@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.content.Intent
+import android.speech.tts.TextToSpeech
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -23,10 +24,37 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Color
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material.icons.outlined.Headphones
+import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.Flight
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import com.chatbuddy.presentation.translate.TranslateMode
+import com.chatbuddy.presentation.translate.SayMiConversationMode
+import com.chatbuddy.domain.model.LanguageOption
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
@@ -103,6 +131,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.ButtonDefaults
+import com.chatbuddy.domain.model.LiveConversationTurn
+import com.chatbuddy.domain.model.LiveSpeaker
 import com.chatbuddy.domain.model.ModelStatus
 import com.chatbuddy.domain.model.ModelCacheState
 import com.chatbuddy.domain.model.TranslationProviderKind
@@ -212,23 +244,34 @@ fun ChatBuddyApp(windowSizeClass: WindowSizeClass, viewModel: HomeViewModel) {
                     .widthIn(max = 600.dp)
                     .imePadding()
                     .padding(vertical = 16.dp)
-                if (state.selectedTab == HomeTab.CHAT) {
-                    Column(
-                        modifier = contentModifier.fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        ChatTab(state, viewModel, snackbarHostState) { folderPicker.launch(null) }
+                when (state.selectedTab) {
+                    HomeTab.CHAT -> {
+                        Column(
+                            modifier = contentModifier.fillMaxHeight(),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            ChatTab(state, viewModel, snackbarHostState) { folderPicker.launch(null) }
+                        }
                     }
-                } else {
-                    Column(
-                        modifier = contentModifier.verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        when (state.selectedTab) {
-                            HomeTab.TRANSLATE -> TranslateTab(state, viewModel, snackbarHostState)
-                            HomeTab.OCR -> OcrTab(viewModel, snackbarHostState)
-                            HomeTab.SETTINGS -> SettingsTab(state, viewModel) { folderPicker.launch(null) }
-                            HomeTab.CHAT -> Unit
+                    HomeTab.TRANSLATE -> {
+                        Column(
+                            modifier = contentModifier.fillMaxHeight(),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            TranslateTab(state, viewModel, snackbarHostState)
+                        }
+                    }
+                    else -> {
+                        val scrollState = rememberScrollState()
+                        Column(
+                            modifier = contentModifier.verticalScroll(scrollState),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            when (state.selectedTab) {
+                                HomeTab.OCR -> OcrTab(viewModel, snackbarHostState, scrollState)
+                                HomeTab.SETTINGS -> SettingsTab(state, viewModel) { folderPicker.launch(null) }
+                                HomeTab.CHAT, HomeTab.TRANSLATE -> Unit
+                            }
                         }
                     }
                 }
@@ -403,7 +446,7 @@ private fun ChatContent(
                         chatState.webSearching -> {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                             Text(
-                                "Searching Wikipedia for a grounded source…",
+                                "Searching web & scraping content…",
                                 style = MaterialTheme.typography.labelMedium,
                                 modifier = Modifier.semantics {
                                     liveRegion = LiveRegionMode.Polite
@@ -646,7 +689,6 @@ private fun TranslateTab(
     val viewModel = hiltViewModel<TranslationViewModel>()
     val translationState by viewModel.state.collectAsStateWithLifecycleCompat()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var microphonePermissionGranted by rememberSaveable {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -656,55 +698,1156 @@ private fun TranslateTab(
     val microphonePermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> microphonePermissionGranted = granted }
+
     LaunchedEffect(state.pendingTranslationText) {
         state.pendingTranslationText?.let {
             viewModel.setSourceText(it)
+            viewModel.setTranslateMode(TranslateMode.TEXT_INPUT)
             homeViewModel.consumeTranslationText()
         }
     }
+
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Material 3 Clean Mode Selector (Segmented TabRow)
+        TabRow(
+            selectedTabIndex = if (translationState.translateMode == TranslateMode.LIVE_CONVERSATION) 0 else 1,
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+        ) {
+            Tab(
+                selected = translationState.translateMode == TranslateMode.LIVE_CONVERSATION,
+                onClick = { viewModel.setTranslateMode(TranslateMode.LIVE_CONVERSATION) },
+                text = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Mic,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            "Percakapan Langsung",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                },
+                modifier = Modifier.heightIn(min = 48.dp)
+            )
+            Tab(
+                selected = translationState.translateMode == TranslateMode.TEXT_INPUT,
+                onClick = { viewModel.setTranslateMode(TranslateMode.TEXT_INPUT) },
+                text = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            "Terjemahan Teks",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                },
+                modifier = Modifier.heightIn(min = 48.dp)
+            )
+        }
+
+        if (translationState.translateMode == TranslateMode.LIVE_CONVERSATION) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                TwoWayLiveConversationSection(
+                    state = translationState,
+                    viewModel = viewModel,
+                    microphonePermissionGranted = microphonePermissionGranted,
+                    onRequestMicrophone = { microphonePermission.launch(Manifest.permission.RECORD_AUDIO) },
+                    onOpenModelSetup = { homeViewModel.selectTab(HomeTab.SETTINGS) }
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                TextInputTranslationSection(
+                    state = translationState,
+                    viewModel = viewModel,
+                    snackbarHostState = snackbarHostState
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LanguagePickerDialog(
+    title: String,
+    currentLanguageTag: String,
+    languages: List<LanguageOption>,
+    onSelectLanguage: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) },
+        text = {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(languages) { lang ->
+                    val isSelected = lang.tag == currentLanguageTag
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onSelectLanguage(lang.tag)
+                                onDismiss()
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "${lang.displayName} (${lang.tag.uppercase()})",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                            )
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Tutup")
+            }
+        }
+    )
+}
+
+@Composable
+private fun SayMiLanguageHeader(
+    sourceLangName: String,
+    targetLangName: String,
+    headsetConnected: Boolean,
+    onOpenSourcePicker: () -> Unit,
+    onOpenTargetPicker: () -> Unit,
+    onSwap: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Left Pill: Source (Speaker 1)
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier
+                .weight(1f)
+                .clickable(onClick = onOpenSourcePicker)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    Icon(
+                        imageVector = if (headsetConnected) Icons.Outlined.Headphones else Icons.Outlined.Smartphone,
+                        contentDescription = null,
+                        tint = Color(0xFFE54D38),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = sourceLangName,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Outlined.ArrowDropDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
+        // Center Swap Button
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            modifier = Modifier
+                .size(38.dp)
+                .clickable(onClick = onSwap)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Outlined.SwapHoriz,
+                    contentDescription = "Tukar bahasa",
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
+        // Right Pill: Target (Speaker 2)
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier
+                .weight(1f)
+                .clickable(onClick = onOpenTargetPicker)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Smartphone,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = targetLangName,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Outlined.ArrowDropDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SayMiTravelToolbar(
+    mode: SayMiConversationMode,
+    headsetConnected: Boolean,
+    hasHistory: Boolean,
+    onSelectMode: (SayMiConversationMode) -> Unit,
+    onClearHistory: () -> Unit
+) {
+    var showModeMenu by remember { mutableStateOf(false) }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            // Mode Selector Pill
+            Box {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                    modifier = Modifier.clickable { showModeMenu = true }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = if (mode == SayMiConversationMode.FREE_TALK) "🌐 Bicara Bebas" else "🎧 Sentuh 2-Arah",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Icon(
+                            imageVector = Icons.Outlined.ArrowDropDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+                DropdownMenu(
+                    expanded = showModeMenu,
+                    onDismissRequest = { showModeMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text("🌐 Mode Bicara Bebas", fontWeight = FontWeight.SemiBold)
+                                Text("Auto turn-taking tanpa sentuh layar (Timekettle)", style = MaterialTheme.typography.bodySmall)
+                            }
+                        },
+                        onClick = {
+                            onSelectMode(SayMiConversationMode.FREE_TALK)
+                            showModeMenu = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text("🎧 Mode Sentuh 2-Arah", fontWeight = FontWeight.SemiBold)
+                                Text("Sentuh tombol mic saat berbicara (Lenovo Erazer)", style = MaterialTheme.typography.bodySmall)
+                            }
+                        },
+                        onClick = {
+                            onSelectMode(SayMiConversationMode.TOUCH_TWO_WAY)
+                            showModeMenu = false
+                        }
+                    )
+                }
+            }
+
+            // Status Badges & Actions
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                // Audio Device Badge
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (headsetConnected) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (headsetConnected) Icons.Outlined.Headphones else Icons.Outlined.Smartphone,
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
+                            tint = if (headsetConnected) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = if (headsetConnected) "TWS" else "Ponsel",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (headsetConnected) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // 100% Offline Badge
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF1E8E3E).copy(alpha = 0.15f)
+                ) {
+                    Text(
+                        text = "100% OFFLINE",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1E8E3E),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+
+                // Clear history button
+                if (hasHistory) {
+                    IconButton(
+                        onClick = onClearHistory,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Delete,
+                            contentDescription = "Hapus percakapan",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AudioWaveformBar(
+    tint: Color,
+    isPlaying: Boolean = false,
+    label: String? = null,
+    onReplay: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val transition = rememberInfiniteTransition(label = "audio_bar")
+    val animScale by transition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1.3f,
+        animationSpec = infiniteRepeatable(tween(350, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "waveform_scale"
+    )
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (isPlaying) tint.copy(alpha = 0.32f) else tint.copy(alpha = 0.15f),
+        modifier = modifier.clickable(onClick = onReplay)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = if (isPlaying) Icons.Outlined.Stop else Icons.AutoMirrored.Outlined.VolumeUp,
+                contentDescription = if (isPlaying) "Hentikan suara" else "Putar ulang suara",
+                tint = tint,
+                modifier = Modifier.size(16.dp)
+            )
+            if (label != null) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = tint
+                )
+            }
+            val barHeights = listOf(6, 12, 16, 10, 14, 8, 18, 12, 6, 14, 10, 16, 8, 12)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                barHeights.forEachIndexed { index, h ->
+                    val dynamicH = if (isPlaying) {
+                        (h * if (index % 2 == 0) animScale else (1.8f - animScale)).coerceIn(4f, 22f)
+                    } else {
+                        h.toFloat()
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(2.dp)
+                            .height(dynamicH.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(tint)
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun PulsingWaveform(color: Color, modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "waveform")
+    val anim1 by transition.animateFloat(
+        initialValue = 0.3f, targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(tween(400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "w1"
+    )
+    val anim2 by transition.animateFloat(
+        initialValue = 0.8f, targetValue = 0.2f,
+        animationSpec = infiniteRepeatable(tween(550, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "w2"
+    )
+    val anim3 by transition.animateFloat(
+        initialValue = 0.2f, targetValue = 0.9f,
+        animationSpec = infiniteRepeatable(tween(350, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "w3"
+    )
+    val anim4 by transition.animateFloat(
+        initialValue = 0.6f, targetValue = 0.3f,
+        animationSpec = infiniteRepeatable(tween(600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "w4"
+    )
+
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        val scales = listOf(anim1, anim2, anim3, anim4, anim2, anim1)
+        scales.forEach { scale ->
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height((20 * scale).coerceAtLeast(4f).dp)
+                    .clip(RoundedCornerShape(1.5.dp))
+                    .background(color)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SayMiDialogueBubble(
+    turn: LiveConversationTurn,
+    partnerFlipped: Boolean,
+    activePlayingText: String?,
+    onReplayTranslation: () -> Unit,
+    onReplaySource: () -> Unit
+) {
+    val isSpeakerA = turn.speaker == LiveSpeaker.SPEAKER_A
+    val shouldFlip = !isSpeakerA && partnerFlipped
+
+    val coralRed = Color(0xFFE54D38)
+    val charcoal = Color(0xFF2C2D30)
+
+    val containerColor = if (isSpeakerA) coralRed else charcoal
+    val contentColor = Color.White
+
+    val isTranslationPlaying = activePlayingText == turn.translatedText
+    val isSourcePlaying = activePlayingText == turn.sourceText
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (shouldFlip) Modifier.graphicsLayer { rotationZ = 180f } else Modifier)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+        ) {
+            Icon(
+                imageVector = if (isSpeakerA) Icons.Outlined.Smartphone else Icons.Outlined.Public,
+                contentDescription = null,
+                tint = if (isSpeakerA) coralRed else MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = if (isSpeakerA) "Anda (${turn.sourceLanguage.uppercase()})" else "Lawan Bicara (${turn.sourceLanguage.uppercase()})",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Surface(
+            shape = RoundedCornerShape(
+                topStart = 16.dp,
+                topEnd = 16.dp,
+                bottomStart = if (isSpeakerA) 4.dp else 16.dp,
+                bottomEnd = if (isSpeakerA) 16.dp else 4.dp
+            ),
+            color = containerColor,
+            shadowElevation = 2.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "“${turn.sourceText}”",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = contentColor.copy(alpha = 0.82f)
+                )
+
+                HorizontalDivider(color = contentColor.copy(alpha = 0.15f))
+
+                Text(
+                    text = turn.translatedText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = contentColor
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isSourcePlaying) contentColor.copy(alpha = 0.32f) else contentColor.copy(alpha = 0.12f),
+                        modifier = Modifier.clickable(onClick = onReplaySource)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isSourcePlaying) Icons.Outlined.Stop else Icons.AutoMirrored.Outlined.VolumeUp,
+                                contentDescription = if (isSourcePlaying) "Hentikan suara asli" else "Putar suara asli",
+                                tint = contentColor,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "Asli (${turn.sourceLanguage.uppercase()})",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = contentColor
+                            )
+                        }
+                    }
+
+                    AudioWaveformBar(
+                        tint = contentColor,
+                        isPlaying = isTranslationPlaying,
+                        label = "Terjemahan (${turn.targetLanguage.uppercase()})",
+                        onReplay = onReplayTranslation
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun LiveInterimCard(
+    activeSpeaker: LiveSpeaker?,
+    livePhase: LiveTranslationPhase,
+    liveTranscript: String,
+    sourceLang: String,
+    targetLang: String,
+    partnerFlipped: Boolean
+) {
+    val isSpeakerA = activeSpeaker == LiveSpeaker.SPEAKER_A
+    val shouldFlip = !isSpeakerA && partnerFlipped
+    val coralRed = Color(0xFFE54D38)
+    val accentColor = if (isSpeakerA) coralRed else MaterialTheme.colorScheme.secondary
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.5.dp, accentColor),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (shouldFlip) Modifier.graphicsLayer { rotationZ = 180f } else Modifier)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Mic,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = if (isSpeakerA) "Anda berbicara (${sourceLang.uppercase()})…" else "Lawan bicara berbicara (${targetLang.uppercase()})…",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = accentColor
+                    )
+                }
+
+                PulsingWaveform(color = accentColor)
+            }
+
+            Text(
+                text = if (liveTranscript.isNotBlank()) "“$liveTranscript”" else "Mendengarkan audio...",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (liveTranscript.isNotBlank()) FontWeight.Medium else FontWeight.Normal,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Text(
+                text = livePhaseLabel(livePhase, activeSpeaker, sourceLang, targetLang),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TravelCompanionEmptyCard(
+    sourceLangName: String,
+    targetLangName: String
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = Color(0xFFE54D38).copy(alpha = 0.12f),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Outlined.Flight,
+                        contentDescription = null,
+                        tint = Color(0xFFE54D38),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = "AI Travel Companion Offline",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+
+            Text(
+                text = "Percakapan dua arah langsung dengan lawan bicara di mana saja tanpa kuota internet. Gunakan mikrofon ponsel atau earphone Bluetooth TWS apapun.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("🔴 Tombol Kiri", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFFE54D38))
+                    Text(sourceLangName, style = MaterialTheme.typography.bodySmall)
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("🔵 Tombol Kanan", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                    Text(targetLangName, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SayMiBottomMicControls(
+    state: TranslationUiState,
+    sourceLangName: String,
+    targetLangName: String,
+    microphonePermissionGranted: Boolean,
+    onRequestMicrophone: () -> Unit,
+    onToggleSpeakerA: () -> Unit,
+    onToggleSpeakerB: () -> Unit,
+    onToggleTts: (Boolean) -> Unit,
+    onTogglePartnerFlipped: () -> Unit
+) {
+    val active = state.liveEnabled
+    val isSpeakerAActive = active && state.activeSpeaker == LiveSpeaker.SPEAKER_A
+    val isSpeakerBActive = active && state.activeSpeaker == LiveSpeaker.SPEAKER_B
+    val coralRed = Color(0xFFE54D38)
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // Quick auxiliary controls row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            // TTS toggle chip
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = if (state.liveSpeakTranslation) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.clickable { onToggleTts(!state.liveSpeakTranslation) }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = if (state.liveSpeakTranslation) Icons.AutoMirrored.Outlined.VolumeUp else Icons.AutoMirrored.Outlined.VolumeOff,
+                        contentDescription = null,
+                        tint = if (state.liveSpeakTranslation) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = if (state.liveSpeakTranslation) "Suara TTS Aktif" else "Suara TTS Mati",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
+                        color = if (state.liveSpeakTranslation) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // 180° Flip toggle chip
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = if (state.partnerFlipped) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.clickable(onClick = onTogglePartnerFlipped)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.SwapHoriz,
+                        contentDescription = null,
+                        tint = if (state.partnerFlipped) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = if (state.partnerFlipped) "Rotasi 180° Aktif" else "Rotasi 180°",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
+                        color = if (state.partnerFlipped) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // Dual Prominent Pill Buttons (SayMi / Lenovo Erazer Style)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Left Pill: Speaker 1 (Anda / Source Language)
+            Button(
+                onClick = {
+                    if (!microphonePermissionGranted && !active) {
+                        onRequestMicrophone()
+                    } else {
+                        onToggleSpeakerA()
+                    }
+                },
+                enabled = !state.liveChecking,
+                shape = RoundedCornerShape(28.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSpeakerAActive) coralRed else coralRed.copy(alpha = 0.15f),
+                    contentColor = if (isSpeakerAActive) Color.White else coralRed
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 56.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isSpeakerAActive) Icons.Outlined.Stop else Icons.Outlined.Mic,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = if (isSpeakerAActive) "Selesai Bicara" else sourceLangName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Right Pill: Speaker 2 (Lawan Bicara / Target Language)
+            Button(
+                onClick = {
+                    if (!microphonePermissionGranted && !active) {
+                        onRequestMicrophone()
+                    } else {
+                        onToggleSpeakerB()
+                    }
+                },
+                enabled = !state.liveChecking,
+                shape = RoundedCornerShape(28.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSpeakerBActive) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = if (isSpeakerBActive) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSecondaryContainer
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 56.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isSpeakerBActive) Icons.Outlined.Stop else Icons.Outlined.Mic,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = if (isSpeakerBActive) "Selesai Bicara" else targetLangName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TwoWayLiveConversationSection(
+    state: TranslationUiState,
+    viewModel: TranslationViewModel,
+    microphonePermissionGranted: Boolean,
+    onRequestMicrophone: () -> Unit,
+    onOpenModelSetup: () -> Unit
+) {
+    val active = state.liveEnabled
+    val listState = rememberLazyListState()
+
+    var showSourcePicker by remember { mutableStateOf(false) }
+    var showTargetPicker by remember { mutableStateOf(false) }
+
+    val sourceLangName = state.languages.firstOrNull { it.tag == state.sourceLanguage }?.displayName
+        ?: state.sourceLanguage.uppercase()
+    val targetLangName = state.languages.firstOrNull { it.tag == state.targetLanguage }?.displayName
+        ?: state.targetLanguage.uppercase()
+
+    LaunchedEffect(state.conversationTurns.size, state.liveTranscript, active, state.livePhase) {
+        val totalItems = state.conversationTurns.size + (if (active) 1 else 0)
+        if (totalItems > 0) {
+            listState.animateScrollToItem(totalItems - 1)
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // 1. Top SayMi Language Bar: [ 📱 Inggris ▾ ] [ ⇄ ] [ 📱 Indonesia ▾ ]
+        SayMiLanguageHeader(
+            sourceLangName = sourceLangName,
+            targetLangName = targetLangName,
+            headsetConnected = state.voiceCapabilities?.headsetConnected == true,
+            onOpenSourcePicker = { showSourcePicker = true },
+            onOpenTargetPicker = { showTargetPicker = true },
+            onSwap = viewModel::swapLanguages
+        )
+
+        // 2. SayMi Travel Status Toolbar
+        SayMiTravelToolbar(
+            mode = state.sayMiMode,
+            headsetConnected = state.voiceCapabilities?.headsetConnected == true,
+            hasHistory = state.conversationTurns.isNotEmpty(),
+            onSelectMode = viewModel::setSayMiMode,
+            onClearHistory = viewModel::clearConversationSession
+        )
+
+        if (state.liveChecking) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        // 3. Central Timeline: "Riwayat Dialog di paling akhir"
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            if (state.conversationTurns.isEmpty() && !active) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    TravelCompanionEmptyCard(
+                        sourceLangName = sourceLangName,
+                        targetLangName = targetLangName
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(state.conversationTurns) { turn ->
+                        SayMiDialogueBubble(
+                            turn = turn,
+                            partnerFlipped = state.partnerFlipped,
+                            activePlayingText = state.activePlayingAudioText,
+                            onReplayTranslation = { viewModel.replayTurnSpeech(turn, speakTranslation = true) },
+                            onReplaySource = { viewModel.replayTurnSpeech(turn, speakTranslation = false) }
+                        )
+                    }
+
+                    if (active) {
+                        item {
+                            LiveInterimCard(
+                                activeSpeaker = state.activeSpeaker,
+                                livePhase = state.livePhase,
+                                liveTranscript = state.liveTranscript,
+                                sourceLang = state.sourceLanguage,
+                                targetLang = state.targetLanguage,
+                                partnerFlipped = state.partnerFlipped
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Error banner
+        state.liveError?.let { message ->
+            val context = LocalContext.current
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(message, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+                    if (state.voiceCapabilities?.whisperReady == false) {
+                        OutlinedButton(onClick = onOpenModelSetup, modifier = Modifier.fillMaxWidth()) {
+                            Text("Buka Pengaturan Model")
+                        }
+                    } else if (message.contains("TTS", ignoreCase = true) || message.contains("suara", ignoreCase = true)) {
+                        OutlinedButton(
+                            onClick = {
+                                val intent = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+                                runCatching { context.startActivity(intent) }.onFailure {
+                                    runCatching { context.startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS)) }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Buka Pengaturan Suara / TTS")
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Fixed Bottom Microphone Controls (Thumb Zone)
+        SayMiBottomMicControls(
+            state = state,
+            sourceLangName = sourceLangName,
+            targetLangName = targetLangName,
+            microphonePermissionGranted = microphonePermissionGranted,
+            onRequestMicrophone = onRequestMicrophone,
+            onToggleSpeakerA = { viewModel.toggleSpeaker(LiveSpeaker.SPEAKER_A) },
+            onToggleSpeakerB = { viewModel.toggleSpeaker(LiveSpeaker.SPEAKER_B) },
+            onToggleTts = viewModel::setLiveSpeakTranslation,
+            onTogglePartnerFlipped = viewModel::togglePartnerFlipped
+        )
+    }
+
+    if (showSourcePicker) {
+        LanguagePickerDialog(
+            title = "Pilih Bahasa Anda (Speaker 1)",
+            currentLanguageTag = state.sourceLanguage,
+            languages = state.languages,
+            onSelectLanguage = viewModel::setSourceLanguage,
+            onDismiss = { showSourcePicker = false }
+        )
+    }
+
+    if (showTargetPicker) {
+        LanguagePickerDialog(
+            title = "Pilih Bahasa Lawan Bicara (Speaker 2)",
+            currentLanguageTag = state.targetLanguage,
+            languages = state.languages,
+            onSelectLanguage = viewModel::setTargetLanguage,
+            onDismiss = { showTargetPicker = false }
+        )
+    }
+}
+
+@Composable
+private fun TextInputTranslationSection(
+    state: TranslationUiState,
+    viewModel: TranslationViewModel,
+    snackbarHostState: SnackbarHostState
+) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        LanguageSelectorRow(translationState, viewModel, "Swap source and target languages")
-        TranslationModelCard(translationState, viewModel)
+        LanguageSelectorRow(state, viewModel, "Tukar bahasa sumber dan tujuan")
+        TranslationModelCard(state, viewModel)
         OutlinedTextField(
-            value = translationState.sourceText,
+            value = state.sourceText,
             onValueChange = viewModel::setSourceText,
-            label = { Text("Enter text") },
+            label = { Text("Ketik teks untuk diterjemahkan") },
             modifier = Modifier.fillMaxWidth(),
             minLines = 4,
             maxLines = 8
         )
-        LiveTranslationCard(
-            state = translationState,
-            viewModel = viewModel,
-            microphonePermissionGranted = microphonePermissionGranted,
-            onRequestMicrophone = { microphonePermission.launch(Manifest.permission.RECORD_AUDIO) },
-            onOpenModelSetup = { homeViewModel.selectTab(HomeTab.SETTINGS) }
-        )
-        if (translationState.loading || translationState.result != null || translationState.error != null) {
+        if (state.loading || state.result != null || state.error != null) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (translationState.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    translationState.result?.let { result ->
+                    if (state.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    state.result?.let { result ->
                         SelectionContainer { Text(result.text, style = MaterialTheme.typography.bodyLarge) }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             val clipboard = LocalClipboardManager.current
-                            val context = LocalContext.current
                             IconButton(
                                 onClick = {
                                     clipboard.setText(AnnotatedString(result.text))
-                                    scope.launch { snackbarHostState.showSnackbar("Translation copied") }
+                                    scope.launch { snackbarHostState.showSnackbar("Terjemahan disalin") }
                                 },
-                                modifier = Modifier.semantics { contentDescription = "Copy translation" }
+                                modifier = Modifier.semantics { contentDescription = "Salin terjemahan" }
                             ) { Icon(Icons.Outlined.ContentCopy, null) }
                             IconButton(
                                 onClick = {
                                     shareText(context, result.text)
-                                    scope.launch { snackbarHostState.showSnackbar("Share sheet opened") }
+                                    scope.launch { snackbarHostState.showSnackbar("Menu bagikan terbuka") }
                                 },
-                                modifier = Modifier.semantics { contentDescription = "Share translation" }
+                                modifier = Modifier.semantics { contentDescription = "Bagikan terjemahan" }
                             ) { Icon(Icons.Outlined.Share, null) }
                             Spacer(modifier = Modifier.weight(1f))
                             Text(
@@ -715,11 +1858,11 @@ private fun TranslateTab(
                             )
                         }
                     }
-                    translationState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             }
         }
-        TranslationHistoryCard(translationState, viewModel)
+        TranslationHistoryCard(state, viewModel)
     }
 }
 
@@ -764,115 +1907,63 @@ private fun TranslationHistoryCard(
 }
 
 @Composable
-private fun LiveTranslationCard(
-    state: TranslationUiState,
-    viewModel: TranslationViewModel,
-    microphonePermissionGranted: Boolean,
-    onRequestMicrophone: () -> Unit,
-    onOpenModelSetup: () -> Unit
+private fun ConversationTurnCard(
+    turn: LiveConversationTurn,
+    onReplay: () -> Unit
 ) {
-    val active = state.liveEnabled
+    val isSpeakerA = turn.speaker == LiveSpeaker.SPEAKER_A
+    val containerColor = if (isSpeakerA) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.secondaryContainer
+    }
+    val contentColor = if (isSpeakerA) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    }
+
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .semantics { liveRegion = LiveRegionMode.Polite }
+        colors = CardDefaults.cardColors(containerColor = containerColor, contentColor = contentColor),
+        modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Live conversation", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "One phone · pause between turns",
-                        style = MaterialTheme.typography.bodySmall
+                Text(
+                    text = if (isSpeakerA) {
+                        "Speaker 1 (${turn.sourceLanguage.uppercase()}) → ${turn.targetLanguage.uppercase()}"
+                    } else {
+                        "Speaker 2 (${turn.sourceLanguage.uppercase()}) → ${turn.targetLanguage.uppercase()}"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = contentColor.copy(alpha = 0.8f)
+                )
+                IconButton(onClick = onReplay, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.VolumeUp,
+                        contentDescription = "Replay audio",
+                        tint = contentColor
                     )
                 }
-                Icon(
-                    imageVector = if (active) Icons.Outlined.Mic else Icons.AutoMirrored.Outlined.VolumeUp,
-                    contentDescription = if (active) "Microphone active" else "Voice conversation"
-                )
             }
             Text(
-                livePhaseLabel(state.livePhase),
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                text = "“${turn.sourceText}”",
+                style = MaterialTheme.typography.bodyMedium,
+                color = contentColor.copy(alpha = 0.85f)
             )
-            if (!microphonePermissionGranted && !active) {
-                Text(
-                    "Microphone access is required for live conversation.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            if (state.liveChecking) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            Button(
-                onClick = {
-                    if (active) {
-                        viewModel.stopLiveTranslation()
-                    } else if (!microphonePermissionGranted) {
-                        onRequestMicrophone()
-                    } else {
-                        viewModel.toggleLiveTranslation()
-                    }
-                },
-                enabled = !state.liveChecking,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    imageVector = if (active) Icons.Outlined.Stop else Icons.Outlined.Mic,
-                    contentDescription = null
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(if (active) "Stop live translation" else "Start live translation")
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = if (state.voiceCapabilities?.offlineTtsReady == true) {
-                        Icons.AutoMirrored.Outlined.VolumeUp
-                    } else {
-                        Icons.AutoMirrored.Outlined.VolumeOff
-                    },
-                    contentDescription = null
-                )
-                Text(
-                    "Speak translation",
-                    modifier = Modifier.weight(1f).padding(start = 8.dp)
-                )
-                Switch(
-                    checked = state.liveSpeakTranslation &&
-                        state.voiceCapabilities?.offlineTtsReady == true,
-                    onCheckedChange = viewModel::setLiveSpeakTranslation,
-                    enabled = state.voiceCapabilities?.offlineTtsReady == true
-                )
-            }
-            if (state.liveTranscript.isNotBlank()) {
-                VoiceTurnText(label = "You said", text = state.liveTranscript)
-            }
-            state.liveTranslation?.let { translation ->
-                VoiceTurnText(label = "Translation", text = translation.text)
-                Text(
-                    "${providerLabel(translation.provider)} · ${translation.targetLanguage}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            state.liveError?.let { message ->
-                Text(message, color = MaterialTheme.colorScheme.error)
-                if (state.voiceCapabilities?.whisperReady == false) {
-                    OutlinedButton(onClick = onOpenModelSetup, modifier = Modifier.fillMaxWidth()) {
-                        Text("Open model setup")
-                    }
-                }
-            }
-            state.voiceCapabilities?.takeIf { !it.offlineTtsReady }?.let {
-                Text(
-                    "Offline voice output is unavailable for this language; text translation remains available.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+            HorizontalDivider(color = contentColor.copy(alpha = 0.2f), modifier = Modifier.padding(vertical = 2.dp))
+            Text(
+                text = turn.translatedText,
+                style = MaterialTheme.typography.titleSmall,
+                color = contentColor
+            )
         }
     }
 }
@@ -892,13 +1983,21 @@ private fun VoiceTurnText(label: String, text: String) {
     }
 }
 
-private fun livePhaseLabel(phase: LiveTranslationPhase): String = when (phase) {
-    LiveTranslationPhase.Idle -> "Ready for a live conversation"
-    LiveTranslationPhase.Starting -> "Preparing on-device voice"
-    LiveTranslationPhase.Listening -> "Listening for the next sentence"
-    LiveTranslationPhase.Transcribing -> "Transcribing on device"
-    LiveTranslationPhase.Translating -> "Translating on device"
-    LiveTranslationPhase.Speaking -> "Playing the translation"
+private fun livePhaseLabel(
+    phase: LiveTranslationPhase,
+    speaker: LiveSpeaker? = null,
+    sourceLang: String = "en",
+    targetLang: String = "id"
+): String = when (phase) {
+    LiveTranslationPhase.Idle -> "Ready for two-way live conversation"
+    LiveTranslationPhase.Starting -> "Preparing on-device voice engine…"
+    LiveTranslationPhase.Listening -> {
+        val spk = if (speaker == LiveSpeaker.SPEAKER_B) "Speaker 2 (${targetLang.uppercase()})" else "Speaker 1 (${sourceLang.uppercase()})"
+        "Listening to $spk…"
+    }
+    LiveTranslationPhase.Transcribing -> "Transcribing speech on device…"
+    LiveTranslationPhase.Translating -> "Translating on device…"
+    LiveTranslationPhase.Speaking -> "Playing translated speech…"
     LiveTranslationPhase.Error -> "Live translation stopped"
 }
 
@@ -1077,7 +2176,8 @@ private fun providerLabel(provider: TranslationProviderKind): String = when (pro
 @Composable
 private fun OcrTab(
     homeViewModel: HomeViewModel,
-    snackbarHostState: SnackbarHostState
+    snackbarHostState: SnackbarHostState,
+    scrollState: ScrollState? = null
 ) {
     val viewModel = hiltViewModel<OcrViewModel>()
     val translationViewModel = hiltViewModel<TranslationViewModel>()
@@ -1118,22 +2218,34 @@ private fun OcrTab(
         }
     }
     val stopCamera = {
+        captureRequest = 0L
         cameraEnabled = false
         cameraError = null
         viewModel.clearCameraError()
     }
-    val startCamera = {
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    val startCamera: () -> Unit = {
+        captureRequest = 0L
         if (
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
         ) {
+            viewModel.unfreezeCamera()
             cameraEnabled = true
+            cameraError = null
+            viewModel.clearCameraError()
+            scope.launch { scrollState?.scrollTo(0) }
         } else {
             cameraPermission.launch(Manifest.permission.CAMERA)
         }
+        Unit
     }
-    val clipboard = LocalClipboardManager.current
-    val scope = rememberCoroutineScope()
+    LaunchedEffect(cameraEnabled) {
+        if (cameraEnabled) {
+            scrollState?.scrollTo(0)
+        }
+    }
     DisposableEffect(cameraAnalyzer, viewModel) {
         cameraAnalyzer.setCallbacks(
             onResult = viewModel::onCameraResult,
@@ -1166,7 +2278,7 @@ private fun OcrTab(
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         LanguageSelectorRow(translationState, translationViewModel, "Swap OCR and translation languages")
-        if (!cameraEnabled) {
+        if (!cameraEnabled && selectedImageUri == null) {
             BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                 if (maxWidth < 420.dp) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1195,7 +2307,7 @@ private fun OcrTab(
                 }
             }
         }
-        if (!cameraEnabled) {
+        if (!cameraEnabled && selectedImageUri == null) {
             TranslationModelCard(translationState, translationViewModel, compact = true)
         }
         if (cameraEnabled && cameraError == null) {
@@ -1203,6 +2315,8 @@ private fun OcrTab(
                 analyzer = cameraAnalyzer,
                 captureRequest = captureRequest,
                 onCapturedUri = { uri ->
+                    captureRequest = 0L
+                    cameraEnabled = false
                     viewModel.recognize(uri, translationState.sourceLanguage)
                 },
                 onError = { message ->
@@ -1214,11 +2328,20 @@ private fun OcrTab(
                     viewModel.clearCameraError()
                 },
                 overlay = {
-                    OcrBoundingBoxOverlay(ocrResult, modifier = Modifier.fillMaxSize())
+                    if (ocrState.isLiveTranslateEnabled && ocrState.translatedBlocks.isNotEmpty() && ocrResult != null) {
+                        TranslatedBlockOverlay(
+                            result = ocrResult,
+                            blocks = ocrState.translatedBlocks,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        OcrBoundingBoxOverlay(ocrResult, modifier = Modifier.fillMaxSize())
+                    }
                     LiveOcrTranscript(
                         result = ocrResult,
                         translationState = translationState,
                         translatedBlocks = ocrState.translatedBlocks,
+                        fullTranslation = ocrState.fullTranslation,
                         translationProcessing = ocrState.translationProcessing,
                         translationError = ocrState.translationError,
                         translationProvider = translationState.result
@@ -1227,9 +2350,23 @@ private fun OcrTab(
                             ?: ocrState.translatedBlocks.firstOrNull()?.let {
                                 providerLabel(it.provider)
                             },
+                        isLiveTranslateEnabled = ocrState.isLiveTranslateEnabled,
+                        isFrozen = ocrState.isFrozen,
+                        onToggleLiveTranslate = viewModel::toggleLiveTranslate,
                         onDownloadTranslation = translationViewModel::downloadLanguageModels,
                         onStopCamera = stopCamera,
-                        onCapture = { captureRequest += 1L },
+                        onCapture = {
+                            viewModel.freezeFrame()
+                            captureRequest += 1L
+                        },
+                        onResumeCamera = startCamera,
+                        onSpeakTranslation = { text ->
+                            translationViewModel.speak(text, translationState.targetLanguage)
+                        },
+                        onCopyText = { text ->
+                            clipboard.setText(AnnotatedString(text))
+                            scope.launch { snackbarHostState.showSnackbar("Translation copied") }
+                        },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .padding(8.dp)
@@ -1244,22 +2381,42 @@ private fun OcrTab(
                     cameraError?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     OutlinedButton(onClick = {
                         cameraError = null
+                        captureRequest = 0L
                         viewModel.clearCameraError()
+                        startCamera()
                     }) {
                         Text("Retry camera")
                     }
                 }
             }
         } else if (selectedImageUri != null) {
-            OcrImagePreview(
-                uri = selectedImageUri,
-                result = ocrResult,
-                translatedBlocks = ocrState.translatedBlocks,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(4f / 3f)
-                    .heightIn(min = 220.dp, max = 420.dp)
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Button(
+                        onClick = startCamera,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Resume camera (Live scanning)")
+                    }
+                    OutlinedButton(
+                        onClick = { picker.launch(arrayOf("image/*")) }
+                    ) {
+                        Text("Choose image")
+                    }
+                }
+                OcrImagePreview(
+                    uri = selectedImageUri,
+                    result = ocrResult,
+                    translatedBlocks = ocrState.translatedBlocks,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(3f / 4f)
+                        .heightIn(min = 320.dp, max = 580.dp)
+                )
+            }
         } else if (ocrResult == null) {
             OcrEmptyState()
         }
@@ -1270,15 +2427,26 @@ private fun OcrTab(
                 result = result,
                 translationState = translationState,
                 translatedBlocks = ocrState.translatedBlocks,
+                fullTranslation = ocrState.fullTranslation.orEmpty(),
                 translationProcessing = ocrState.translationProcessing,
                 translationError = ocrState.translationError,
                 onCopy = {
                     clipboard.setText(AnnotatedString(result.text))
                     scope.launch { snackbarHostState.showSnackbar("OCR text copied") }
                 },
+                onCopyTranslation = { text ->
+                    clipboard.setText(AnnotatedString(text))
+                    scope.launch { snackbarHostState.showSnackbar("Translation copied") }
+                },
+                onSpeakTranslation = { text ->
+                    translationViewModel.speak(text, translationState.targetLanguage)
+                },
                 onSendToChat = { homeViewModel.sendToChat(result.text) },
                 onSendToTranslation = { homeViewModel.sendToTranslation(result.text) },
-                onTranslate = { translationViewModel.setSourceText(result.text) }
+                onTranslate = {
+                    viewModel.retryTranslation()
+                    translationViewModel.setSourceText(result.text)
+                }
             )
         }
         if (!cameraEnabled && ocrResult != null && ocrResult.text.isBlank() && !ocrState.processing) {
@@ -1326,13 +2494,23 @@ private fun OcrResultPanel(
     result: OcrResult,
     translationState: TranslationUiState,
     translatedBlocks: List<com.chatbuddy.domain.model.TranslatedBlock>,
+    fullTranslation: String = "",
     translationProcessing: Boolean,
     translationError: String?,
     onCopy: () -> Unit,
+    onCopyTranslation: (String) -> Unit = {},
+    onSpeakTranslation: (String) -> Unit = {},
     onSendToChat: () -> Unit,
     onSendToTranslation: () -> Unit,
     onTranslate: () -> Unit
 ) {
+    val displayTranslation = fullTranslation.takeIf { it.isNotBlank() && it.trim() != result.text.trim() }
+        ?: translatedBlocks
+            .filter { it.translatedText.isNotBlank() && it.translatedText.trim() != it.source.text.trim() }
+            .joinToString(" ") { it.translatedText }
+            .takeIf { it.isNotBlank() && it.trim() != result.text.trim() }
+        ?: translationState.result?.text?.takeIf { it.isNotBlank() && it.trim() != result.text.trim() }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -1350,13 +2528,21 @@ private fun OcrResultPanel(
                 Text("Translate detected text")
             }
             if (translationProcessing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            if (translatedBlocks.isNotEmpty()) {
-                Text("Image translation", style = MaterialTheme.typography.titleSmall)
+            if (displayTranslation != null) {
+                Text("Translation", style = MaterialTheme.typography.titleSmall)
                 SelectionContainer {
-                    Text(translatedBlocks.joinToString(" ") { it.translatedText })
+                    Text(displayTranslation)
+                }
+                Row {
+                    IconButton(onClick = { onCopyTranslation(displayTranslation) }) {
+                        Icon(Icons.Outlined.ContentCopy, "Copy translation")
+                    }
+                    IconButton(onClick = { onSpeakTranslation(displayTranslation) }) {
+                        Icon(Icons.AutoMirrored.Outlined.VolumeUp, "Speak translation")
+                    }
                 }
             }
-            translationState.result?.let { translated ->
+            translationState.result?.takeIf { displayTranslation == null }?.let { translated ->
                 Text("Live translation", style = MaterialTheme.typography.titleSmall)
                 SelectionContainer { Text(translated.text) }
                 Text(providerLabel(translated.provider), style = MaterialTheme.typography.bodySmall)

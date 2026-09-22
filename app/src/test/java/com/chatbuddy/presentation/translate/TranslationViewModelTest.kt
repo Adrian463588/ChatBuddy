@@ -2,6 +2,7 @@ package com.chatbuddy.presentation.translate
 
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.LanguageOption
+import com.chatbuddy.domain.model.LiveSpeaker
 import com.chatbuddy.domain.model.LiveTranslationPhase
 import com.chatbuddy.domain.model.TranslationModelStatus
 import com.chatbuddy.domain.model.TranslationProviderKind
@@ -80,7 +81,7 @@ class TranslationViewModelTest {
     fun liveConversationTranslatesFinalWhisperTurnAndReturnsToListening() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val repository = RecordingTranslationRepository(modelReady = true)
-        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository(), EmptyHistoryRepository())
+        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository(maxTurns = 1), EmptyHistoryRepository())
         advanceUntilIdle()
 
         viewModel.toggleLiveTranslation()
@@ -89,6 +90,63 @@ class TranslationViewModelTest {
         assertTrue(viewModel.state.value.liveEnabled)
         assertEquals("translated: hello", viewModel.state.value.liveTranslation?.text)
         assertEquals("hello", viewModel.state.value.liveTranscript)
+        assertEquals(LiveTranslationPhase.Listening, viewModel.state.value.livePhase)
+        assertEquals(1, viewModel.state.value.conversationTurns.size)
+        assertEquals(LiveSpeaker.SPEAKER_A, viewModel.state.value.conversationTurns.first().speaker)
+    }
+
+    @Test
+    fun speakerATurnAndSpeakerBTurnRecordSeparateTurnsWithOppositeLanguagePairs() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val repository = RecordingTranslationRepository(modelReady = true)
+        val viewModel = TranslationViewModel(repository, RecordingVoiceRepository(maxTurns = 2), EmptyHistoryRepository())
+        advanceUntilIdle()
+        viewModel.setAutoTurnTaking(false)
+
+        viewModel.toggleSpeaker(LiveSpeaker.SPEAKER_A)
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.state.value.conversationTurns.size)
+        val turn1 = viewModel.state.value.conversationTurns.first()
+        assertEquals(LiveSpeaker.SPEAKER_A, turn1.speaker)
+        assertEquals("hello", turn1.sourceText)
+        assertEquals("en", turn1.sourceLanguage)
+        assertEquals("id", turn1.targetLanguage)
+
+        viewModel.stopLiveTranslation()
+        advanceUntilIdle()
+
+        viewModel.toggleSpeaker(LiveSpeaker.SPEAKER_B)
+        advanceUntilIdle()
+
+        assertEquals(2, viewModel.state.value.conversationTurns.size)
+        val turn2 = viewModel.state.value.conversationTurns[1]
+        assertEquals(LiveSpeaker.SPEAKER_B, turn2.speaker)
+        assertEquals("id", turn2.sourceLanguage)
+        assertEquals("en", turn2.targetLanguage)
+
+        viewModel.clearConversationSession()
+        assertTrue(viewModel.state.value.conversationTurns.isEmpty())
+    }
+
+    @Test
+    fun autoTurnTakingTogglesAndSwitchesSpeakersAutomatically() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val repository = RecordingTranslationRepository(modelReady = true)
+        val voiceRepo = RecordingVoiceRepository(maxTurns = 1)
+        val viewModel = TranslationViewModel(repository, voiceRepo, EmptyHistoryRepository())
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value.autoTurnTaking)
+        viewModel.setAutoTurnTaking(true)
+        assertTrue(viewModel.state.value.autoTurnTaking)
+
+        viewModel.startLiveTranslation(LiveSpeaker.SPEAKER_A)
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.state.value.conversationTurns.size)
+        assertEquals(LiveSpeaker.SPEAKER_A, viewModel.state.value.conversationTurns.first().speaker)
+        assertEquals(LiveSpeaker.SPEAKER_B, viewModel.state.value.activeSpeaker)
         assertEquals(LiveTranslationPhase.Listening, viewModel.state.value.livePhase)
     }
 
@@ -133,6 +191,43 @@ class TranslationViewModelTest {
         assertFalse(viewModel.state.value.liveEnabled)
         assertEquals(LiveTranslationPhase.Error, viewModel.state.value.livePhase)
         assertEquals("Microphone capture stopped unexpectedly", viewModel.state.value.liveError)
+    }
+
+    @Test
+    fun replayTurnSpeechCanReplayTranslationOrSourceWithCorrectLanguage() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val voiceRepo = RecordingVoiceRepository(maxTurns = 1)
+        val viewModel = TranslationViewModel(
+            RecordingTranslationRepository(modelReady = true),
+            voiceRepo,
+            EmptyHistoryRepository()
+        )
+        advanceUntilIdle()
+
+        viewModel.toggleSpeaker(LiveSpeaker.SPEAKER_A)
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.state.value.conversationTurns.size)
+        val turn = viewModel.state.value.conversationTurns.first()
+
+        // Replay translation (Indonesian)
+        viewModel.replayTurnSpeech(turn, speakTranslation = true)
+        advanceUntilIdle()
+        assertEquals("translated: hello", voiceRepo.lastSpokenText)
+        assertEquals("id", voiceRepo.lastSpokenLanguage)
+
+        // Replay source text (English)
+        viewModel.replayTurnSpeech(turn, speakTranslation = false)
+        advanceUntilIdle()
+        assertEquals("hello", voiceRepo.lastSpokenText)
+        assertEquals("en", voiceRepo.lastSpokenLanguage)
+
+        // Replay again while same text is active toggles stop
+        viewModel.replayTurnSpeech(turn, speakTranslation = false)
+        // Before completion, tapping again triggers stop
+        viewModel.stopSpeaking()
+        advanceUntilIdle()
+        assertTrue(voiceRepo.stopSpeakingCalls > 0)
     }
 
     private class RecordingTranslationRepository(
@@ -184,7 +279,12 @@ class TranslationViewModelTest {
         override suspend fun clear(): AppResult<Unit> = AppResult.Success(Unit)
     }
 
-    private class RecordingVoiceRepository : VoiceRepository {
+    private class RecordingVoiceRepository(private val maxTurns: Int = 1) : VoiceRepository {
+        var turns = 0
+        var lastSpokenText: String? = null
+        var lastSpokenLanguage: String? = null
+        var stopSpeakingCalls = 0
+
         override suspend fun capabilities(languageTag: String): AppResult<VoiceCapabilities> =
             AppResult.Success(
                 VoiceCapabilities(
@@ -195,13 +295,24 @@ class TranslationViewModelTest {
             )
 
         override fun transcribe(languageTag: String): Flow<VoiceTranscript> = flow {
-            emit(VoiceTranscript.Partial("hello"))
-            emit(VoiceTranscript.Final("hello"))
+            if (turns < maxTurns) {
+                turns += 1
+                emit(VoiceTranscript.Partial("hello"))
+                emit(VoiceTranscript.Final("hello"))
+            }
             awaitCancellation()
         }
 
-        override suspend fun speak(text: String, languageTag: String): AppResult<Unit> =
-            AppResult.Success(Unit)
+        override suspend fun speak(text: String, languageTag: String): AppResult<Unit> {
+            lastSpokenText = text
+            lastSpokenLanguage = languageTag
+            return AppResult.Success(Unit)
+        }
+
+        override suspend fun stopSpeaking(): AppResult<Unit> {
+            stopSpeakingCalls += 1
+            return AppResult.Success(Unit)
+        }
     }
 
     private class DelayedTranslationRepository(

@@ -9,7 +9,8 @@ sealed interface VoiceTranscript {
 data class VoiceCapabilities(
     val whisperReady: Boolean,
     val offlineTtsReady: Boolean,
-    val message: String
+    val message: String,
+    val headsetConnected: Boolean = false
 )
 
 enum class LiveTranslationPhase {
@@ -21,3 +22,18 @@ enum class LiveTranslationPhase {
     Speaking,
     Error
 }
+
+enum class LiveSpeaker {
+    SPEAKER_A,
+    SPEAKER_B
+}
+
+data class LiveConversationTurn(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val speaker: LiveSpeaker,
+    val sourceText: String,
+    val translatedText: String,
+    val sourceLanguage: String,
+    val targetLanguage: String,
+    val timestamp: Long = System.currentTimeMillis()
+)

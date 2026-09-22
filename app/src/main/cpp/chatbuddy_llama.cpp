@@ -18,8 +18,8 @@ namespace {
 
 constexpr char kLogTag[] = "ChatBuddyLlama";
 constexpr int32_t kContextSize = 4096;
-constexpr int32_t kBatchSize = 512;
-constexpr int32_t kMicroBatchSize = kBatchSize;
+constexpr int32_t kBatchSize = 128;
+constexpr int32_t kMicroBatchSize = 128;
 constexpr int32_t kStartRuntimeNotReady = 1;
 constexpr int32_t kStartPromptError = 2;
 constexpr int32_t kStartTokenizeError = 3;
@@ -436,6 +436,78 @@ Java_com_chatbuddy_ai_llm_LlamaNative_nativeInit(JNIEnv *, jclass) {
     return JNI_TRUE;
 }
 
+int32_t initContextAndBuffers() {
+    llama_context_params contextParams = llama_context_default_params();
+    contextParams.n_ctx = kContextSize;
+    contextParams.n_batch = kBatchSize;
+    contextParams.n_ubatch = kMicroBatchSize;
+    // A single ChatBuddy conversation uses one sequence. Let sliding-window
+    // attention keep its bounded window instead of reserving a full 4096-token
+    // cache; this is the mobile-safe mode for Gemma 4's SWA layers.
+    contextParams.swa_full = false;
+    const long cores = sysconf(_SC_NPROCESSORS_ONLN);
+    // On modern ARM SOCs (like Exynos 990 or Snapdragon with big/LITTLE),
+    // we limit threads to 4 performance cores, preventing slow Cortex-A55
+    // LITTLE cores from stalling ggml barrier sync and causing thermal throttling.
+    const int32_t threads = static_cast<int32_t>(std::clamp<long>(
+        cores > 4 ? 4 : (cores > 0 ? cores - 1 : 1), 1, 4));
+    contextParams.n_threads = threads;
+    contextParams.n_threads_batch = threads;
+    g_context = llama_init_from_model(g_model, contextParams);
+    if (g_context == nullptr) {
+        logError("Unable to create llama context");
+        freeRuntime();
+        return 5;
+    }
+    g_vocab = llama_model_get_vocab(g_model);
+    g_batch = llama_batch_init(1, 0, 1);
+    g_batchCapacity = 1;
+    if (!hasUsableTokenBatch(g_batch, g_batchCapacity)) {
+        logError("Unable to allocate llama batch buffers");
+        freeRuntime();
+        return 6;
+    }
+    g_cancelRequested.store(false, std::memory_order_release);
+    return 0;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_chatbuddy_ai_llm_LlamaNative_nativeLoadPath(
+    JNIEnv *env,
+    jclass,
+    jstring modelPathString) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try {
+        if (modelPathString == nullptr) {
+            return 1;
+        }
+        ScopedUtfChars modelPath(env, modelPathString);
+        if (!modelPath.valid()) {
+            return 1;
+        }
+        freeRuntime();
+
+        llama_model_params modelParams = llama_model_default_params();
+        modelParams.load_mode = LLAMA_LOAD_MODE_MMAP;
+        g_model = llama_model_load_from_file(modelPath.get(), modelParams);
+        if (g_model == nullptr) {
+            logError("Unable to load GGUF model from path");
+            freeRuntime();
+            return 4;
+        }
+
+        return initContextAndBuffers();
+    } catch (const std::exception &error) {
+        logError(error.what());
+        freeRuntime();
+        return 7;
+    } catch (...) {
+        logError("Native model loading threw an unknown exception");
+        freeRuntime();
+        return 7;
+    }
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_com_chatbuddy_ai_llm_LlamaNative_nativeLoad(JNIEnv *, jclass, jint fileDescriptor) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -463,35 +535,7 @@ Java_com_chatbuddy_ai_llm_LlamaNative_nativeLoad(JNIEnv *, jclass, jint fileDesc
             return 4;
         }
 
-        llama_context_params contextParams = llama_context_default_params();
-        contextParams.n_ctx = kContextSize;
-        contextParams.n_batch = kBatchSize;
-        contextParams.n_ubatch = kMicroBatchSize;
-        // A single ChatBuddy conversation uses one sequence. Let sliding-window
-        // attention keep its bounded window instead of reserving a full 4096-token
-        // cache; this is the mobile-safe mode for Gemma 4's SWA layers.
-        contextParams.swa_full = false;
-        const long cores = sysconf(_SC_NPROCESSORS_ONLN);
-        const int32_t threads = static_cast<int32_t>(std::clamp<long>(
-            cores > 0 ? cores - 1 : 1, 1, 7));
-        contextParams.n_threads = threads;
-        contextParams.n_threads_batch = threads;
-        g_context = llama_init_from_model(g_model, contextParams);
-        if (g_context == nullptr) {
-            logError("Unable to create llama context");
-            freeRuntime();
-            return 5;
-        }
-        g_vocab = llama_model_get_vocab(g_model);
-        g_batch = llama_batch_init(1, 0, 1);
-        g_batchCapacity = 1;
-        if (!hasUsableTokenBatch(g_batch, g_batchCapacity)) {
-            logError("Unable to allocate llama batch buffers");
-            freeRuntime();
-            return 6;
-        }
-        g_cancelRequested.store(false, std::memory_order_release);
-        return 0;
+        return initContextAndBuffers();
     } catch (const std::exception &error) {
         logError(error.what());
         freeRuntime();

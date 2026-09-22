@@ -144,12 +144,18 @@ class LlamaJniEngine @Inject constructor(
         }
         val file = withContext(Dispatchers.IO) { modelStore.finalFile(artifact) }
             ?: return AppResult.Error("Download the Gemma model into the selected SAF folder first")
-        when (val verification = withContext(Dispatchers.IO) {
-            downloadManager.verify(artifact)
-        }) {
-            is AppResult.Error -> return AppResult.Error(verification.message, verification.cause)
-            is AppResult.Success -> Unit
-            AppResult.Loading -> return AppResult.Error("Gemma model verification is still running")
+        val fileLengthMatches = withContext(Dispatchers.IO) {
+            val length = modelStore.fileLength(file)
+            length == artifact.sizeBytes
+        }
+        if (!fileLengthMatches) {
+            when (val verification = withContext(Dispatchers.IO) {
+                downloadManager.verify(artifact)
+            }) {
+                is AppResult.Error -> return AppResult.Error(verification.message, verification.cause)
+                is AppResult.Success -> Unit
+                AppResult.Loading -> return AppResult.Error("Gemma model verification is still running")
+            }
         }
         if (loadedModel != null && loadedFingerprint == artifact.sha256) return AppResult.Success(Unit)
         if (loadedModel != null) {
@@ -164,6 +170,15 @@ class LlamaJniEngine @Inject constructor(
             is AppResult.Success -> result.data
             is AppResult.Error -> null
             AppResult.Loading -> null
+        }
+        val cachedFile = cache?.file?.takeIf { it.isFile && it.length() == artifact.sizeBytes }
+        if (cachedFile != null) {
+            val pathResult = runCatching { LlamaNative.nativeLoadPath(cachedFile.absolutePath) }
+                .getOrDefault(-1)
+            if (pathResult == 0) {
+                loadedFingerprint = artifact.sha256
+                return AppResult.Success(Unit)
+            }
         }
         val descriptor = withContext(Dispatchers.IO) { openDescriptor(cache, file) }
             ?: return AppResult.Error("Unable to open Gemma model through SAF")

@@ -17,12 +17,13 @@ import javax.inject.Singleton
 
 @Singleton
 class MediaWikiWebSearchRepository @Inject constructor(
-    private val client: OkHttpClient
+    private val client: OkHttpClient,
+    private val deepWebScraper: DeepWebScraper
 ) : WebSearchRepository {
     private val json = Json { ignoreUnknownKeys = true }
     private val webClient = client.newBuilder()
-        .followRedirects(false)
-        .followSslRedirects(false)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .build()
 
     override suspend fun search(query: String, limit: Int): AppResult<List<WebEvidence>> =
@@ -35,65 +36,80 @@ class MediaWikiWebSearchRepository @Inject constructor(
                 return@withContext AppResult.Error("Web search query is too long")
             }
 
-            val request = Request.Builder()
-                .url(buildUrl(normalizedQuery, limit.coerceIn(1, MAX_RESULTS)))
-                .header("Accept", "application/json")
-                .header("User-Agent", USER_AGENT)
-                .get()
-                .build()
-
-            try {
-                webClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        return@withContext AppResult.Error(
-                            "Web search failed with HTTP ${response.code}"
-                        )
-                    }
-                    val contentType = response.header("Content-Type").orEmpty()
-                    if (!contentType.lowercase().startsWith("application/json")) {
-                        return@withContext AppResult.Error("Web search returned an unexpected content type")
-                    }
-                    val payload = json.decodeFromString<MediaWikiResponse>(
-                        response.readBoundedBody(MAX_RESPONSE_BYTES)
-                    )
-                    val retrievedAt = System.currentTimeMillis()
-                    val evidence = payload.query?.pages.orEmpty().mapNotNull { page ->
-                        val content = page.extract?.trim().orEmpty()
-                        val url = page.fullUrl?.trim().orEmpty()
-                        if (page.pageId == null || page.title.isBlank() || content.isBlank() ||
-                            !url.isTrustedWikipediaUrl()
-                        ) {
-                            null
-                        } else {
-                            WebEvidence(
-                                title = page.title.trim(),
-                                url = url,
-                                excerpt = content.replace(WHITESPACE, " ").take(EXCERPT_LENGTH),
-                                content = content.take(CONTENT_LENGTH),
-                                provider = PROVIDER,
-                                sourceId = "$SOURCE_PREFIX${page.pageId}",
-                                retrievedAtEpochMs = retrievedAt
-                            )
-                        }
-                    }
-                    AppResult.Success(evidence)
-                }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                AppResult.Error("Web search could not be completed", error)
+            // Try Indonesian Wikipedia first if query appears Indonesian or try both
+            val idResult = searchWiki(BASE_URL_ID, normalizedQuery, limit.coerceIn(1, MAX_RESULTS))
+            if (idResult is AppResult.Success && idResult.data.isNotEmpty()) {
+                return@withContext idResult
             }
+
+            // Fallback or default to English Wikipedia
+            val enResult = searchWiki(BASE_URL_EN, normalizedQuery, limit.coerceIn(1, MAX_RESULTS))
+            if (enResult is AppResult.Success && enResult.data.isNotEmpty()) {
+                return@withContext enResult
+            }
+
+            if (idResult is AppResult.Success) idResult else enResult
         }
 
-    private fun buildUrl(query: String, limit: Int) = BASE_URL.toHttpUrl().newBuilder()
+    private fun searchWiki(baseUrl: String, query: String, limit: Int): AppResult<List<WebEvidence>> {
+        val request = Request.Builder()
+            .url(buildUrl(baseUrl, query, limit))
+            .header("Accept", "application/json")
+            .header("User-Agent", USER_AGENT)
+            .get()
+            .build()
+
+        return try {
+            webClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return AppResult.Error("Wikipedia search failed with HTTP ${response.code}")
+                }
+                val contentType = response.header("Content-Type").orEmpty()
+                if (!contentType.lowercase().startsWith("application/json")) {
+                    return AppResult.Error("Wikipedia search returned an unexpected content type")
+                }
+                val payload = json.decodeFromString<MediaWikiResponse>(
+                    response.readBoundedBody(MAX_RESPONSE_BYTES)
+                )
+                val retrievedAt = System.currentTimeMillis()
+                val evidence = payload.query?.pages.orEmpty().mapNotNull { page ->
+                    val content = page.extract?.trim().orEmpty()
+                    val url = page.fullUrl?.trim().orEmpty()
+                    if (page.pageId == null || page.title.isBlank() || content.isBlank() ||
+                        !url.isTrustedWikipediaUrl()
+                    ) {
+                        null
+                    } else {
+                        WebEvidence(
+                            title = page.title.trim(),
+                            url = url,
+                            excerpt = content.replace(WHITESPACE, " ").take(EXCERPT_LENGTH),
+                            content = content.take(CONTENT_LENGTH),
+                            provider = PROVIDER,
+                            sourceId = "$SOURCE_PREFIX${page.pageId}",
+                            retrievedAtEpochMs = retrievedAt
+                        )
+                    }
+                }
+                AppResult.Success(evidence)
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            AppResult.Error("Wikipedia search could not be completed", error)
+        }
+    }
+
+    private fun buildUrl(baseUrl: String, query: String, limit: Int) = baseUrl.toHttpUrl().newBuilder()
         .addQueryParameter("action", "query")
         .addQueryParameter("generator", "search")
         .addQueryParameter("gsrsearch", query)
         .addQueryParameter("gsrnamespace", "0")
         .addQueryParameter("gsrlimit", limit.toString())
         .addQueryParameter("prop", "extracts|info")
+        .addQueryParameter("exintro", "1")
         .addQueryParameter("explaintext", "1")
-        .addQueryParameter("exchars", CONTENT_LENGTH.toString())
+        .addQueryParameter("exlimit", limit.toString())
         .addQueryParameter("inprop", "url")
         .addQueryParameter("format", "json")
         .addQueryParameter("formatversion", "2")
@@ -102,7 +118,7 @@ class MediaWikiWebSearchRepository @Inject constructor(
     private fun String.isTrustedWikipediaUrl(): Boolean {
         val url = toHttpUrlOrNull() ?: return false
         return url.scheme == "https" &&
-            url.host == "en.wikipedia.org" &&
+            (url.host.endsWith(".wikipedia.org")) &&
             url.username.isEmpty() &&
             url.password.isEmpty()
     }
@@ -131,7 +147,8 @@ class MediaWikiWebSearchRepository @Inject constructor(
     }
 
     companion object {
-        private const val BASE_URL = "https://en.wikipedia.org/w/api.php"
+        private const val BASE_URL_EN = "https://en.wikipedia.org/w/api.php"
+        private const val BASE_URL_ID = "https://id.wikipedia.org/w/api.php"
         private const val PROVIDER = "Wikipedia"
         private const val SOURCE_PREFIX = "wikipedia:"
         private const val USER_AGENT =
@@ -139,7 +156,7 @@ class MediaWikiWebSearchRepository @Inject constructor(
         private const val MIN_QUERY_LENGTH = 2
         private const val MAX_QUERY_LENGTH = 400
         private const val MAX_RESULTS = 5
-        private const val CONTENT_LENGTH = 1200
+        private const val CONTENT_LENGTH = 2000
         private const val EXCERPT_LENGTH = 320
         private const val MAX_RESPONSE_BYTES = 512L * 1024L
         private val WHITESPACE = Regex("\\s+")

@@ -6,6 +6,12 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+add_compile_options(-O3)
+set(CMAKE_C_FLAGS_DEBUG "-O3")
+set(CMAKE_CXX_FLAGS_DEBUG "-O3")
+set(CMAKE_C_FLAGS_RELEASE "-O3")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+
 if(NOT ANDROID)
     message(FATAL_ERROR "ChatBuddy native runtime must be built for Android")
 endif()

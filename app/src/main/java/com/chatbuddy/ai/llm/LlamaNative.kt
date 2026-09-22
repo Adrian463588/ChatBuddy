@@ -7,6 +7,7 @@ internal object LlamaNative {
 
     external fun nativeInit(): Boolean
     external fun nativeLoad(fileDescriptor: Int): Int
+    external fun nativeLoadPath(path: String): Int
     external fun nativeStart(
         systemPrompt: String,
         userPrompt: String,

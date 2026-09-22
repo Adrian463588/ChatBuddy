@@ -7,6 +7,7 @@ import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.LanguageOption
@@ -31,6 +32,7 @@ import kotlinx.coroutines.withContext
 class MlKitTranslationRepository @Inject constructor() : TranslationRepository {
     /** ML Kit model operations are serialized so a status read cannot race a download. */
     private val modelMutex = Mutex()
+    private val translatorCache = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Translator>()
 
     override suspend fun availableLanguages(): AppResult<List<LanguageOption>> =
         withContext(Dispatchers.Default) {
@@ -160,37 +162,40 @@ class MlKitTranslationRepository @Inject constructor() : TranslationRepository {
 
             modelMutex.withLock {
                 try {
-                    val manager = RemoteModelManager.getInstance()
-                    val sourceModel = modelFor(languages.first)
-                    val targetModel = modelFor(languages.second)
-                    val sourceReady = manager.isModelDownloaded(sourceModel).awaitCancellable()
-                    val targetReady = manager.isModelDownloaded(targetModel).awaitCancellable()
-                    if (!sourceReady || !targetReady) {
-                        return@withLock AppResult.Error(
-                            "Offline language model is not downloaded. Use model setup before translating."
+                    var translator = translatorCache[languages]
+                    if (translator == null) {
+                        val manager = RemoteModelManager.getInstance()
+                        val sourceModel = modelFor(languages.first)
+                        val targetModel = modelFor(languages.second)
+                        val sourceReady = manager.isModelDownloaded(sourceModel).awaitCancellable()
+                        val targetReady = manager.isModelDownloaded(targetModel).awaitCancellable()
+                        if (!sourceReady || !targetReady) {
+                            return@withLock AppResult.Error(
+                                "Offline language model is not downloaded. Use model setup before translating."
+                            )
+                        }
+                        translator = Translation.getClient(
+                            TranslatorOptions.Builder()
+                                .setSourceLanguage(languages.first)
+                                .setTargetLanguage(languages.second)
+                                .build()
                         )
+                        translatorCache[languages] = translator
                     }
 
-                    val translator = Translation.getClient(
-                        TranslatorOptions.Builder()
-                            .setSourceLanguage(languages.first)
-                            .setTargetLanguage(languages.second)
-                            .build()
-                    )
-                    translator.use {
-                        val translated = it.translate(request.text).awaitCancellable()
-                        AppResult.Success(
-                            TranslationResult(
-                                text = translated,
-                                provider = TranslationProviderKind.ML_KIT_PLAY_SERVICES,
-                                sourceLanguage = languages.first,
-                                targetLanguage = languages.second
-                            )
+                    val translated = translator.translate(request.text).awaitCancellable()
+                    AppResult.Success(
+                        TranslationResult(
+                            text = translated,
+                            provider = TranslationProviderKind.ML_KIT_PLAY_SERVICES,
+                            sourceLanguage = languages.first,
+                            targetLanguage = languages.second
                         )
-                    }
+                    )
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (error: Exception) {
+                    translatorCache.remove(languages)?.close()
                     AppResult.Error("Offline ML Kit translation failed.", error)
                 }
             }

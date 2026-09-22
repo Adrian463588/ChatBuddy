@@ -7,9 +7,12 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.NoiseSuppressor
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.util.Log
 import androidx.core.content.ContextCompat
+import com.chatbuddy.ai.voice.SileroVad
 import com.chatbuddy.ai.voice.WhisperEngine
 import com.chatbuddy.domain.model.AppResult
 import com.chatbuddy.domain.model.VoiceCapabilities
@@ -20,6 +23,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
@@ -37,6 +41,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.yield
 import kotlin.coroutines.resume
 import kotlin.math.sqrt
@@ -65,12 +70,90 @@ internal fun calculateAudioRms(samples: ShortArray): Float {
     return sqrt(sum / samples.size).toFloat()
 }
 
+internal fun normalizeAudioVolume(samples: ShortArray): ShortArray {
+    if (samples.isEmpty()) return samples
+    var maxAbs = 0
+    for (sample in samples) {
+        val absVal = kotlin.math.abs(sample.toInt())
+        if (absVal > maxAbs) maxAbs = absVal
+    }
+    if (maxAbs < 500) return samples
+    val targetPeak = 24_000f
+    val gain = (targetPeak / maxAbs).coerceIn(1.0f, 4.0f)
+    if (gain <= 1.05f) return samples
+
+    val boosted = ShortArray(samples.size)
+    for (i in samples.indices) {
+        val scaled = (samples[i] * gain).toInt()
+        boosted[i] = scaled.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+    }
+    return boosted
+}
+internal fun normalizeLanguageTag(languageTag: String): String? =
+    languageTag.trim().lowercase(Locale.ROOT).takeIf { it.isNotBlank() && it != "auto" }
+
+/**
+ * Maps a BCP-47/Android language tag to the 2-letter ISO 639-1 code that
+ * whisper.cpp expects (e.g. "in" → "id", "zh-CN" → "zh").
+ * Whisper does NOT accept the legacy "in" code for Indonesian — it only
+ * recognises "id". This function is the single place where all such
+ * normalisations live so the C++ layer never sees ambiguous codes.
+ */
+internal fun normalizeWhisperLanguageTag(languageTag: String): String? {
+    val raw = normalizeLanguageTag(languageTag) ?: return null
+    val lang = raw.substringBefore('-').substringBefore('_')
+    return when (lang) {
+        "in" -> "id"        // legacy Indonesian BCP-47 code → Whisper code
+        else -> lang        // take base language only; Whisper doesn't use region codes
+    }
+}
+
+internal fun resolveTtsCandidateLocales(languageTag: String): List<Locale> {
+    val tag = normalizeLanguageTag(languageTag) ?: return emptyList()
+    val langCode = tag.substringBefore('-').substringBefore('_')
+    return when (langCode) {
+        "id", "in" -> listOf(
+            Locale("id", "ID"),
+            Locale("in", "ID"),
+            Locale("id"),
+            Locale("in")
+        )
+        "en" -> listOf(Locale.US, Locale.UK, Locale("en"))
+        "ja" -> listOf(Locale.JAPAN, Locale("ja"))
+        "ko" -> listOf(Locale.KOREA, Locale("ko"))
+        "zh" -> listOf(Locale.SIMPLIFIED_CHINESE, Locale.CHINA, Locale("zh"))
+        "fr" -> listOf(Locale.FRANCE, Locale("fr"))
+        "es" -> listOf(Locale("es", "ES"), Locale("es"))
+        "de" -> listOf(Locale.GERMANY, Locale("de"))
+        "it" -> listOf(Locale.ITALY, Locale("it"))
+        "ru" -> listOf(Locale("ru", "RU"), Locale("ru"))
+        "ar" -> listOf(Locale.forLanguageTag("ar-SA"), Locale("ar"))
+        "th" -> listOf(Locale.forLanguageTag("th-TH"), Locale("th"))
+        "vi" -> listOf(Locale.forLanguageTag("vi-VN"), Locale("vi"))
+        "pt" -> listOf(Locale("pt", "BR"), Locale("pt"))
+        else -> listOfNotNull(runCatching { Locale.forLanguageTag(tag) }.getOrNull())
+    }
+}
+
+internal fun isLanguageMatch(voiceLocale: Locale, targetLocale: Locale): Boolean {
+    val vLang = voiceLocale.language.lowercase(Locale.ROOT)
+    val tLang = targetLocale.language.lowercase(Locale.ROOT)
+    val langMatches = (vLang == tLang) || (vLang in listOf("id", "in") && tLang in listOf("id", "in"))
+    if (!langMatches) return false
+    val vCountry = voiceLocale.country.lowercase(Locale.ROOT)
+    val tCountry = targetLocale.country.lowercase(Locale.ROOT)
+    return tCountry.isEmpty() || vCountry.isEmpty() || vCountry == tCountry
+}
+
 @Singleton
 class AndroidVoiceRepository @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val whisper: WhisperEngine
+    private val whisper: WhisperEngine,
+    private val sileroVad: SileroVad
 ) : VoiceRepository {
-    private val voiceSessionMutex = Mutex()
+    // AtomicBoolean guard prevents concurrent recording sessions without holding a mutex
+    // for the entire session duration (which caused deadlocks on speaker switch).
+    private val recordingActive = AtomicBoolean(false)
     private val ttsMutex = Mutex()
 
     override suspend fun capabilities(languageTag: String): AppResult<VoiceCapabilities> =
@@ -86,6 +169,7 @@ class AndroidVoiceRepository @Inject constructor(
             }
 
             val whisperSetup = try {
+                runCatching { sileroVad.ensureLoaded() }
                 whisper.ensureLoaded()
             } catch (cancellation: CancellationException) {
                 throw cancellation
@@ -94,6 +178,7 @@ class AndroidVoiceRepository @Inject constructor(
             }
             val whisperReady = whisperSetup is AppResult.Success
             val ttsReady = if (whisperReady) checkOfflineTts(languageTag) else false
+            val headset = isHeadsetConnected()
             AppResult.Success(
                 VoiceCapabilities(
                     whisperReady = whisperReady,
@@ -103,17 +188,39 @@ class AndroidVoiceRepository @Inject constructor(
                             ?: "Whisper model/runtime is not installed"
                         !ttsReady -> "Offline Android voice is not available for this language"
                         else -> "Voice turn-taking is ready"
-                    }
+                    },
+                    headsetConnected = headset
                 )
             )
         }
 
     @SuppressLint("MissingPermission")
     override fun transcribe(languageTag: String): Flow<VoiceTranscript> = channelFlow {
-        voiceSessionMutex.withLock {
+        // Guard: if a previous session is still tearing down, give it a moment then reject.
+        // This avoids the deadlock caused by voiceSessionMutex.withLock wrapping the entire
+        // long-running session — the new speaker's transcribe() call would block forever
+        // waiting for the old session's mutex to release during cleanup.
+        if (!recordingActive.compareAndSet(false, true)) {
+            // Give previous AudioRecord up to 300ms to release before failing
+            var waited = 0
+            while (recordingActive.get() && waited < 300) {
+                delay(50)
+                waited += 50
+            }
+            if (recordingActive.get()) {
+                Log.w(TAG, "transcribe: previous session still active after 300ms, rejecting")
+                send(VoiceTranscript.Failed("Microphone is busy — previous session still stopping"))
+                return@channelFlow
+            }
+            recordingActive.set(true)
+        }
+        Log.d(TAG, "transcribe: session starting for lang=$languageTag")
+
+        var activeRecorder: AudioRecord? = null
+        try {
             if (!hasRecordAudioPermission()) {
                 send(VoiceTranscript.Failed("Microphone permission is required for live translation"))
-                return@withLock
+                return@channelFlow
             }
 
             val setup = try {
@@ -125,20 +232,22 @@ class AndroidVoiceRepository @Inject constructor(
             }
             when (setup) {
                 is AppResult.Error -> {
+                    Log.e(TAG, "transcribe: Whisper not ready: ${setup.message}")
                     send(VoiceTranscript.Failed(setup.message))
-                    return@withLock
+                    return@channelFlow
                 }
                 is AppResult.Success -> Unit
                 AppResult.Loading -> {
                     send(VoiceTranscript.Failed("Whisper model is still preparing"))
-                    return@withLock
+                    return@channelFlow
                 }
             }
+            Log.d(TAG, "transcribe: Whisper ready, opening AudioRecord")
 
-            val normalizedLanguage = normalizeLanguageTag(languageTag)
+            val normalizedLanguage = normalizeWhisperLanguageTag(languageTag)
                 ?: run {
                     send(VoiceTranscript.Failed("A valid source language is required for live translation"))
-                    return@withLock
+                    return@channelFlow
                 }
             val minBufferSize = AudioRecord.getMinBufferSize(
                 SAMPLE_RATE,
@@ -147,13 +256,10 @@ class AndroidVoiceRepository @Inject constructor(
             )
             if (minBufferSize <= 0) {
                 send(VoiceTranscript.Failed("This device cannot provide a 16 kHz microphone stream"))
-                return@withLock
+                return@channelFlow
             }
 
             val bufferSize = minBufferSize.coerceAtLeast(AUDIO_FRAME_SAMPLES * Short.SIZE_BYTES * 2)
-            // Whisper partials can take longer than one audio frame. Keep capture
-            // independent from inference; a slow inference pass drops the oldest
-            // queued frame instead of terminating the microphone session.
             val frameChannel = Channel<ShortArray>(
                 capacity = FRAME_CHANNEL_CAPACITY,
                 onBufferOverflow = BufferOverflow.DROP_OLDEST
@@ -167,27 +273,88 @@ class AndroidVoiceRepository @Inject constructor(
                     return@launch
                 }
                 val recorder = try {
-                    AudioRecord(
-                        MediaRecorder.AudioSource.MIC,
-                        SAMPLE_RATE,
-                        AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT,
-                        bufferSize
-                    )
+                    // Priority 1: UNPROCESSED — provides the rawest signal for Whisper's
+                    // own log-mel pipeline. Only available on devices that declare support.
+                    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+                    val supportsUnprocessed = audioManager?.getProperty(
+                        android.media.AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED
+                    ) != null
+                    val unprocessedRecorder = if (supportsUnprocessed) {
+                        runCatching {
+                            AudioRecord(
+                                MediaRecorder.AudioSource.UNPROCESSED,
+                                SAMPLE_RATE,
+                                AudioFormat.CHANNEL_IN_MONO,
+                                AudioFormat.ENCODING_PCM_16BIT,
+                                bufferSize
+                            ).takeIf { it.state == AudioRecord.STATE_INITIALIZED }
+                        }.getOrNull()
+                    } else null
+
+                    when {
+                        unprocessedRecorder != null -> {
+                            Log.d(TAG, "transcribe: AudioRecord opened with UNPROCESSED (best for ASR)")
+                            unprocessedRecorder
+                        }
+                        else -> {
+                            unprocessedRecorder?.release()
+                            // Priority 2: VOICE_RECOGNITION — bypasses most OEM processing.
+                            val vrRecorder = AudioRecord(
+                                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                                SAMPLE_RATE,
+                                AudioFormat.CHANNEL_IN_MONO,
+                                AudioFormat.ENCODING_PCM_16BIT,
+                                bufferSize
+                            )
+                            if (vrRecorder.state == AudioRecord.STATE_INITIALIZED) {
+                                Log.d(TAG, "transcribe: AudioRecord opened with VOICE_RECOGNITION")
+                                vrRecorder
+                            } else {
+                                vrRecorder.release()
+                                Log.w(TAG, "transcribe: VOICE_RECOGNITION failed, falling back to MIC")
+                                // Priority 3: MIC (last resort)
+                                AudioRecord(
+                                    MediaRecorder.AudioSource.MIC,
+                                    SAMPLE_RATE,
+                                    AudioFormat.CHANNEL_IN_MONO,
+                                    AudioFormat.ENCODING_PCM_16BIT,
+                                    bufferSize
+                                )
+                            }
+                        }
+                    }
                 } catch (error: Throwable) {
+                    Log.e(TAG, "transcribe: Failed to open AudioRecord: ${safeMessage(error)}")
                     trySend(VoiceTranscript.Failed("Unable to open microphone: ${safeMessage(error)}"))
                     frameChannel.close()
                     return@launch
                 }
+                activeRecorder = recorder
+
+                val audioSessionId = recorder.audioSessionId
+                // AGC is intentionally DISABLED: hardware AGC boosts noise during
+                // silence, causing amplitude spikes that fool the energy VAD into
+                // triggering a Whisper call, which then hallucinates text.
+                // Whisper's internal log-mel normalization handles gain variation better.
+                val agc: android.media.audiofx.AutomaticGainControl? = null
+                // NoiseSuppressor remains enabled only when NOT on UNPROCESSED source,
+                // where it can provide modest SNR improvement without the AGC side-effects.
+                val ns = if (NoiseSuppressor.isAvailable()) {
+                    runCatching {
+                        NoiseSuppressor.create(audioSessionId)?.apply { enabled = true }
+                    }.getOrNull()
+                } else null
 
                 var started = false
                 try {
                     if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                        Log.e(TAG, "transcribe: AudioRecord not initialized (state=${recorder.state})")
                         trySend(VoiceTranscript.Failed("Microphone is unavailable on this device"))
                         return@launch
                     }
                     recorder.startRecording()
                     started = true
+                    Log.d(TAG, "transcribe: AudioRecord started (sessionId=$audioSessionId, agc=disabled, ns=${ns != null})")
                     while (isActive) {
                         val frame = ShortArray(AUDIO_FRAME_SAMPLES)
                         val read = recorder.read(
@@ -202,6 +369,7 @@ class AndroidVoiceRepository @Inject constructor(
                             }
                             AudioReadState.EMPTY -> yield()
                             AudioReadState.TERMINAL -> {
+                                Log.w(TAG, "transcribe: AudioRecord read returned terminal code $read")
                                 if (isActive) {
                                     trySend(VoiceTranscript.Failed("Microphone capture stopped unexpectedly"))
                                 }
@@ -212,38 +380,71 @@ class AndroidVoiceRepository @Inject constructor(
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (error: Throwable) {
+                    Log.e(TAG, "transcribe: capture error: ${safeMessage(error)}")
                     if (isActive) {
                         trySend(VoiceTranscript.Failed("Microphone capture stopped: ${safeMessage(error)}"))
                     }
                 } finally {
                     if (started) runCatching { recorder.stop() }
+                    runCatching { agc?.release() }
+                    runCatching { ns?.release() }
                     recorder.release()
+                    activeRecorder = null
                     frameChannel.close()
+                    Log.d(TAG, "transcribe: AudioRecord released")
                 }
             }
 
             try {
                 withContext(Dispatchers.Default) {
+                    sileroVad.ensureLoaded()
+                    sileroVad.resetState()
+
                     val preRoll = ArrayDeque<ShortArray>(PRE_ROLL_FRAMES)
                     val utterance = ArrayList<Short>(MAX_UTTERANCE_SAMPLES)
-                    var speechFrames = 0
-                    var silenceFrames = 0
+                    var consecutiveSpeechFrames = 0
+                    var consecutiveSilenceFrames = 0
+                    var confirmedSpeechFrames = 0
                     var inSpeech = false
-                    var lastPartialAt = 0L
                     var pipelineFailed = false
 
                     fun appendSamples(samples: ShortArray) {
                         samples.forEach(utterance::add)
                     }
 
-                    suspend fun transcribeSnapshot(partial: Boolean): Boolean {
-                        if (utterance.size < MIN_UTTERANCE_SAMPLES) return true
+                    suspend fun finishUtterance(): Boolean {
+                        val totalAudioSamples = utterance.size
+                        val totalDurationMs = totalAudioSamples * 1000L / SAMPLE_RATE
+                        val speechDurationMs = confirmedSpeechFrames * (AUDIO_FRAME_SAMPLES * 1000L / SAMPLE_RATE)
+
+                        // Speech content verification:
+                        // Discard if total audio is too short (< 600ms) OR if confirmed speech frames < 350ms.
+                        // This prevents background noise, room hum, chair creaks, or coughs from triggering Whisper!
+                        if (totalDurationMs < 600L || speechDurationMs < MIN_CONFIRMED_SPEECH_MS) {
+                            Log.d(TAG, "transcribe: discarded non-speech audio (total=${totalDurationMs}ms, speech=${speechDurationMs}ms)")
+                            utterance.clear()
+                            preRoll.clear()
+                            consecutiveSpeechFrames = 0
+                            consecutiveSilenceFrames = 0
+                            confirmedSpeechFrames = 0
+                            inSpeech = false
+                            return true
+                        }
+
                         var healthy = true
                         try {
-                            whisper.transcribe(utterance.toShortArray(), normalizedLanguage, partial)
+                            val rawSamples = utterance.toShortArray()
+                            val normalizedSamples = normalizeAudioVolume(rawSamples)
+                            Log.d(TAG, "transcribe: running Whisper on ${rawSamples.size} samples (${totalDurationMs}ms, speech=${speechDurationMs}ms)")
+                            whisper.transcribe(normalizedSamples, normalizedLanguage, partial = false)
                                 .collect { transcript ->
                                     currentCoroutineContext().ensureActive()
-                                    if (transcript is VoiceTranscript.Failed) healthy = false
+                                    if (transcript is VoiceTranscript.Failed) {
+                                        Log.e(TAG, "transcribe: Whisper failed: ${transcript.message}")
+                                        healthy = false
+                                    } else {
+                                        Log.d(TAG, "transcribe: got transcript: $transcript")
+                                    }
                                     send(transcript)
                                 }
                         } catch (cancellation: CancellationException) {
@@ -252,286 +453,281 @@ class AndroidVoiceRepository @Inject constructor(
                             send(VoiceTranscript.Failed("Whisper transcription failed: ${safeMessage(error)}"))
                             healthy = false
                         }
+                        utterance.clear()
+                        preRoll.clear()
+                        consecutiveSpeechFrames = 0
+                        consecutiveSilenceFrames = 0
+                        confirmedSpeechFrames = 0
+                        inSpeech = false
                         return healthy
                     }
 
-                    suspend fun finishUtterance(): Boolean {
-                        val healthy = transcribeSnapshot(partial = false)
-                        utterance.clear()
-                        preRoll.clear()
-                        speechFrames = 0
-                        silenceFrames = 0
-                        inSpeech = false
-                        lastPartialAt = 0L
-                        return healthy
-                    }
+                    var noiseFloor = 0.008f
 
                     for (frame in frameChannel) {
                         currentCoroutineContext().ensureActive()
-                        val speech = calculateAudioRms(frame) >= SPEECH_RMS_THRESHOLD
+
+                        // 1. Convert frame to FloatArray [-1.0, 1.0] for Silero VAD
+                        val floatFrame = FloatArray(frame.size) { frame[it] / 32768.0f }
+                        val speechProb = if (sileroVad.isReady && frame.size == SileroVad.FRAME_SIZE) {
+                            sileroVad.infer(floatFrame)
+                        } else -1f
+
+                        val rms = calculateAudioRms(frame)
+                        val dynamicThreshold = (noiseFloor * 1.6f + 0.005f).coerceIn(0.015f, 0.08f)
+
+                        // 2. Determine if this frame is speech
+                        val isSpeech = if (speechProb >= 0f) {
+                            // Neural Silero VAD decision with hysteresis
+                            if (inSpeech) {
+                                speechProb >= VAD_SILENCE_PROB_THRESHOLD
+                            } else {
+                                speechProb >= VAD_SPEECH_PROB_THRESHOLD
+                            }
+                        } else {
+                            // Fallback to energy-based VAD if Silero is unavailable
+                            rms >= dynamicThreshold
+                        }
+
                         if (!inSpeech) {
+                            if (speechProb < 0f && rms < dynamicThreshold * 0.70f) {
+                                noiseFloor = 0.98f * noiseFloor + 0.02f * rms
+                            }
                             preRoll.addLast(frame)
                             while (preRoll.size > PRE_ROLL_FRAMES) preRoll.removeFirst()
-                            speechFrames = if (speech) speechFrames + 1 else 0
-                            if (speechFrames >= MIN_SPEECH_FRAMES) {
+
+                            consecutiveSpeechFrames = if (isSpeech) consecutiveSpeechFrames + 1 else 0
+                            if (consecutiveSpeechFrames >= MIN_SPEECH_TRIGGER_FRAMES) {
                                 inSpeech = true
+                                consecutiveSilenceFrames = 0
+                                confirmedSpeechFrames = consecutiveSpeechFrames
                                 preRoll.forEach(::appendSamples)
                                 preRoll.clear()
-                                silenceFrames = 0
-                                lastPartialAt = android.os.SystemClock.elapsedRealtime()
+                                Log.d(TAG, "transcribe: VAD speech start (prob=$speechProb rms=$rms)")
                             }
                             continue
                         }
 
+                        // While inSpeech
                         appendSamples(frame)
-                        silenceFrames = if (speech) 0 else silenceFrames + 1
-                        val now = android.os.SystemClock.elapsedRealtime()
-                        if (utterance.size >= PARTIAL_MIN_SAMPLES &&
-                            now - lastPartialAt >= PARTIAL_INTERVAL_MS
-                        ) {
-                            if (!transcribeSnapshot(partial = true)) {
-                                pipelineFailed = true
-                                break
-                            }
-                            lastPartialAt = now
+                        if (isSpeech) {
+                            confirmedSpeechFrames++
+                            consecutiveSilenceFrames = 0
+                        } else {
+                            consecutiveSilenceFrames++
                         }
-                        if (silenceFrames >= TRAILING_SILENCE_FRAMES ||
-                            utterance.size >= MAX_UTTERANCE_SAMPLES
-                        ) {
+
+                        val silenceDurationMs = consecutiveSilenceFrames * (AUDIO_FRAME_SAMPLES * 1000L / SAMPLE_RATE)
+                        val utteranceSamples = utterance.size
+
+                        // Natural end-of-speech: require TRAILING_SILENCE_MS (1200ms) of silence
+                        if (silenceDurationMs >= TRAILING_SILENCE_MS || utteranceSamples >= MAX_UTTERANCE_SAMPLES) {
+                            Log.d(TAG, "transcribe: VAD speech end (samples=$utteranceSamples, silence=${silenceDurationMs}ms, confirmedSpeech=${confirmedSpeechFrames * 32}ms)")
                             if (!finishUtterance()) {
                                 pipelineFailed = true
                                 break
                             }
                         }
                     }
-                    if (!pipelineFailed && inSpeech) finishUtterance()
+                    if (!pipelineFailed && utterance.isNotEmpty()) {
+                        finishUtterance()
+                    }
                 }
             } finally {
+                sileroVad.resetState()
+                runCatching { activeRecorder?.stop() }
                 captureJob.cancelAndJoin()
                 frameChannel.cancel()
-                withContext(NonCancellable + Dispatchers.IO) {
-                    runCatching { whisper.close() }
-                }
+                Log.d(TAG, "transcribe: session ended for lang=$languageTag")
             }
+        } finally {
+            recordingActive.set(false)
+            Log.d(TAG, "transcribe: recordingActive released for lang=$languageTag")
+        }
+    }
+
+    private var warmTts: TextToSpeech? = null
+    private var warmTtsInitJob: CompletableDeferred<Boolean>? = null
+
+    private suspend fun getOrCreateWarmTts(): TextToSpeech? = withContext(Dispatchers.Main) {
+        ttsMutex.withLock {
+            warmTts?.let { return@withContext it }
+            val initDeferred = CompletableDeferred<Boolean>()
+            warmTtsInitJob = initDeferred
+            val created = try {
+                TextToSpeech(context) { status ->
+                    initDeferred.complete(status == TextToSpeech.SUCCESS)
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to instantiate TextToSpeech", e)
+                return@withContext null
+            }
+            val success = withTimeoutOrNull(TTS_INIT_TIMEOUT_MS) {
+                initDeferred.await()
+            } ?: false
+            if (success) {
+                warmTts = created
+                created
+            } else {
+                runCatching { created.shutdown() }
+                warmTts = null
+                null
+            }
+        }
+    }
+
+    override suspend fun stopSpeaking(): AppResult<Unit> = withContext(Dispatchers.Main) {
+        ttsMutex.withLock {
+            runCatching { warmTts?.stop() }
+            AppResult.Success(Unit)
         }
     }
 
     override suspend fun speak(text: String, languageTag: String): AppResult<Unit> =
-        ttsMutex.withLock {
-            if (text.isBlank()) return@withLock AppResult.Success(Unit)
-            val locale = localeFor(languageTag)
-                ?: return@withLock AppResult.Error("A valid target language is required for offline TTS")
-            withContext(Dispatchers.Main) {
-                speakOnMain(text, locale)
+        withContext(Dispatchers.Main) {
+            if (text.isBlank()) return@withContext AppResult.Success(Unit)
+            val engine = getOrCreateWarmTts()
+                ?: return@withContext AppResult.Error("Offline TTS engine could not be initialized")
+            val candidates = resolveTtsCandidateLocales(languageTag)
+            if (candidates.isEmpty()) {
+                return@withContext AppResult.Error("Invalid target language for offline TTS")
+            }
+
+            ttsMutex.withLock {
+                val supportedLocale = applyTtsLanguage(engine, candidates)
+                    ?: return@withLock AppResult.Error("Offline TTS language is not supported on this device")
+                val voice = offlineVoice(engine, supportedLocale)
+                if (voice != null) {
+                    runCatching { engine.voice = voice }
+                }
+
+                val requestId = UUID.randomUUID().toString()
+                val synthesisResult = withTimeoutOrNull(TTS_SPEAK_TIMEOUT_MS) {
+                    suspendCancellableCoroutine<AppResult<Unit>> { continuation ->
+                        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                            override fun onStart(utteranceId: String?) = Unit
+
+                            override fun onDone(utteranceId: String?) {
+                                if (utteranceId == requestId && continuation.isActive) {
+                                    runCatching { continuation.resume(AppResult.Success(Unit)) }
+                                }
+                            }
+
+                            override fun onError(utteranceId: String?) {
+                                if (utteranceId == requestId && continuation.isActive) {
+                                    runCatching { continuation.resume(AppResult.Error("Offline TTS synthesis failed")) }
+                                }
+                            }
+
+                            override fun onError(utteranceId: String?, errorCode: Int) {
+                                if (utteranceId == requestId && continuation.isActive) {
+                                    runCatching { continuation.resume(AppResult.Error("Offline TTS synthesis error code: $errorCode")) }
+                                }
+                            }
+                        })
+
+                        val result = runCatching {
+                            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, requestId)
+                        }.getOrDefault(TextToSpeech.ERROR)
+
+                        if (result == TextToSpeech.ERROR) {
+                            if (continuation.isActive) {
+                                continuation.resume(AppResult.Error("Offline TTS synthesis failed to queue"))
+                            }
+                        }
+
+                        continuation.invokeOnCancellation {
+                            runCatching { engine.stop() }
+                        }
+                    }
+                }
+                if (synthesisResult == null) {
+                    runCatching { engine.stop() }
+                    AppResult.Error("Offline TTS playback timed out")
+                } else {
+                    synthesisResult
+                }
             }
         }
 
     private suspend fun checkOfflineTts(languageTag: String): Boolean {
-        val locale = localeFor(languageTag) ?: return false
+        val candidates = resolveTtsCandidateLocales(languageTag)
+        if (candidates.isEmpty()) return false
+        val engine = getOrCreateWarmTts() ?: return false
         return withContext(Dispatchers.Main) {
-            withTimeoutOrNull(TTS_INIT_TIMEOUT_MS) {
-                suspendCancellableCoroutine { continuation ->
-                    val lock = Any()
-                    var engine: TextToSpeech? = null
-                    var pendingStatus: Int? = null
-                    var closed = false
-
-                    fun shutdown() {
-                        val toClose = synchronized(lock) {
-                            if (closed) null else {
-                                closed = true
-                                engine.also { engine = null }
-                            }
-                        }
-                        toClose?.shutdown()
-                    }
-
-                    fun complete(value: Boolean) {
-                        if (continuation.isActive) {
-                            runCatching { continuation.resume(value) }
-                        }
-                        shutdown()
-                    }
-
-                    fun handleInit(status: Int) {
-                        val current = synchronized(lock) {
-                            if (closed) return
-                            if (engine == null) {
-                                pendingStatus = status
-                                return
-                            }
-                            engine
-                        } ?: return
-                        val available = if (status == TextToSpeech.SUCCESS) {
-                            runCatching {
-                                current.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE &&
-                                    offlineVoice(current, locale) != null
-                            }.getOrDefault(false)
-                        } else false
-                        complete(available)
-                    }
-
-                    val created = try {
-                        TextToSpeech(context, ::handleInit)
-                    } catch (error: Throwable) {
-                        complete(false)
-                        return@suspendCancellableCoroutine
-                    }
-                    var statusToHandle: Int? = null
-                    var closeCreated = false
-                    synchronized(lock) {
-                        if (closed) {
-                            closeCreated = true
-                        } else {
-                            engine = created
-                            statusToHandle = pendingStatus
-                            pendingStatus = null
-                        }
-                    }
-                    if (closeCreated) {
-                        created.shutdown()
-                    } else {
-                        statusToHandle?.let(::handleInit)
-                    }
-                    continuation.invokeOnCancellation { shutdown() }
+            ttsMutex.withLock {
+                candidates.any { loc ->
+                    runCatching { engine.isLanguageAvailable(loc) >= TextToSpeech.LANG_AVAILABLE }.getOrDefault(false)
                 }
-            } ?: false
+            }
         }
     }
 
-    private suspend fun speakOnMain(text: String, locale: Locale): AppResult<Unit> =
-        withTimeoutOrNull(TTS_SPEAK_TIMEOUT_MS) {
-            suspendCancellableCoroutine { continuation ->
-                val lock = Any()
-                var engine: TextToSpeech? = null
-                var pendingStatus: Int? = null
-                var closed = false
-                val requestId = UUID.randomUUID().toString()
-
-                fun shutdown() {
-                    val toClose = synchronized(lock) {
-                        if (closed) null else {
-                            closed = true
-                            engine.also { engine = null }
-                        }
-                    }
-                    toClose?.shutdown()
-                }
-
-                fun complete(result: AppResult<Unit>) {
-                    if (continuation.isActive) {
-                        runCatching { continuation.resume(result) }
-                    }
-                    shutdown()
-                }
-
-                fun configureAndSpeak(status: Int) {
-                    val current = synchronized(lock) {
-                        if (closed) return
-                        if (engine == null) {
-                            pendingStatus = status
-                            return
-                        }
-                        engine
-                    } ?: return
-                    if (status != TextToSpeech.SUCCESS) {
-                        complete(AppResult.Error("Offline TTS initialization failed"))
-                        return
-                    }
-                    val voice = runCatching { offlineVoice(current, locale) }.getOrNull()
-                    val languageStatus = runCatching { current.setLanguage(locale) }.getOrDefault(
-                        TextToSpeech.LANG_NOT_SUPPORTED
-                    )
-                    if (languageStatus < TextToSpeech.LANG_AVAILABLE || voice == null ||
-                        runCatching { current.setVoice(voice) }.getOrDefault(TextToSpeech.ERROR) ==
-                        TextToSpeech.ERROR
-                    ) {
-                        complete(AppResult.Error("Offline TTS voice is unavailable"))
-                        return
-                    }
-                    current.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) = Unit
-
-                        override fun onDone(utteranceId: String?) {
-                            if (utteranceId == requestId &&
-                                continuation.isActive
-                            ) {
-                                complete(AppResult.Success(Unit))
-                            }
-                        }
-
-                        override fun onError(utteranceId: String?) {
-                            if (utteranceId == requestId) {
-                                complete(AppResult.Error("Offline TTS synthesis failed"))
-                            }
-                        }
-                    })
-                    val result = runCatching {
-                        current.speak(text, TextToSpeech.QUEUE_FLUSH, null, requestId)
-                    }.getOrDefault(TextToSpeech.ERROR)
-                    if (result == TextToSpeech.ERROR) {
-                        complete(AppResult.Error("Offline TTS synthesis failed"))
-                    }
-                }
-
-                val created = try {
-                    TextToSpeech(context, ::configureAndSpeak)
-                } catch (error: Throwable) {
-                    complete(AppResult.Error("Offline TTS initialization failed: ${safeMessage(error)}"))
-                    return@suspendCancellableCoroutine
-                }
-                var statusToHandle: Int? = null
-                var closeCreated = false
-                synchronized(lock) {
-                    if (closed) {
-                        closeCreated = true
-                    } else {
-                        engine = created
-                        statusToHandle = pendingStatus
-                        pendingStatus = null
-                    }
-                }
-                if (closeCreated) {
-                    created.shutdown()
-                } else {
-                    statusToHandle?.let(::configureAndSpeak)
-                }
-                continuation.invokeOnCancellation { shutdown() }
+    private fun applyTtsLanguage(engine: TextToSpeech, candidateLocales: List<Locale>): Locale? {
+        for (loc in candidateLocales) {
+            val status = runCatching { engine.setLanguage(loc) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
+            if (status >= TextToSpeech.LANG_AVAILABLE) {
+                return loc
             }
-        } ?: AppResult.Error("Offline TTS timed out")
+        }
+        return null
+    }
 
     private fun hasRecordAudioPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-    private fun normalizeLanguageTag(languageTag: String): String? =
-        languageTag.trim().lowercase(Locale.ROOT).takeIf { it.isNotBlank() && it != "auto" }
-
-    private fun localeFor(languageTag: String): Locale? = normalizeLanguageTag(languageTag)
-        ?.let(Locale::forLanguageTag)
-        ?.takeIf { it.language.isNotBlank() }
-
     private fun offlineVoice(engine: TextToSpeech, locale: Locale): android.speech.tts.Voice? =
-        engine.voices.firstOrNull { voice ->
-            val sameLanguage = voice.locale == locale || voice.locale.language == locale.language
-            sameLanguage && !voice.isNetworkConnectionRequired
-        }
+        runCatching {
+            val voices = engine.voices ?: return@runCatching null
+            voices.firstOrNull { voice ->
+                isLanguageMatch(voice.locale, locale) && !voice.isNetworkConnectionRequired
+            } ?: voices.firstOrNull { voice ->
+                isLanguageMatch(voice.locale, locale)
+            }
+        }.getOrNull()
+
 
     private fun safeMessage(error: Throwable): String =
         error.message?.trim()?.takeIf { it.isNotEmpty() } ?: "device error"
 
+    private fun isHeadsetConnected(): Boolean {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            ?: return false
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            val devices = runCatching {
+                audioManager.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS or android.media.AudioManager.GET_DEVICES_INPUTS)
+            }.getOrNull() ?: emptyArray()
+            val hasHeadset = devices.any { device ->
+                device.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    device.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    device.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                    device.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+            }
+            if (hasHeadset) return true
+        }
+        @Suppress("DEPRECATION")
+        return audioManager.isBluetoothA2dpOn || audioManager.isBluetoothScoOn || audioManager.isWiredHeadsetOn
+    }
+
     companion object {
+        private const val TAG = "ChatBuddyVoice"
         private const val SAMPLE_RATE = 16_000
-        private const val AUDIO_FRAME_SAMPLES = 320 // 20 ms at 16 kHz
+        // 512 samples = 32ms @ 16kHz, exactly matching Silero VAD v5 input chunk
+        private const val AUDIO_FRAME_SAMPLES = 512
         private const val FRAME_CHANNEL_CAPACITY = 64
-        private const val PRE_ROLL_FRAMES = 8 // 160 ms
-        private const val MIN_SPEECH_FRAMES = 2
-        private const val TRAILING_SILENCE_FRAMES = 35 // 700 ms
-        private const val MIN_UTTERANCE_SAMPLES = SAMPLE_RATE / 2
-        private const val PARTIAL_MIN_SAMPLES = SAMPLE_RATE
-        private const val PARTIAL_INTERVAL_MS = 1_200L
-        private const val MAX_UTTERANCE_SAMPLES = SAMPLE_RATE * 30
-        private const val SPEECH_RMS_THRESHOLD = 0.018f
+        // 10 frames * 32ms = 320ms pre-roll to capture initial consonants/syllables
+        private const val PRE_ROLL_FRAMES = 10
+        // 3 consecutive speech frames (96ms) to trigger speech onset (rejects clicks/taps)
+        private const val MIN_SPEECH_TRIGGER_FRAMES = 3
+        // 1200ms trailing silence allows natural human conversational pauses without cutting off mid-sentence
+        private const val TRAILING_SILENCE_MS = 1200L
+        // Must contain at least 350ms of confirmed human speech to be sent to Whisper (blocks noise/silence)
+        private const val MIN_CONFIRMED_SPEECH_MS = 350L
+        private const val MAX_UTTERANCE_SAMPLES = SAMPLE_RATE * 25 // 25s max
+        // Silero VAD probability thresholds with hysteresis
+        private const val VAD_SPEECH_PROB_THRESHOLD = 0.50f
+        private const val VAD_SILENCE_PROB_THRESHOLD = 0.35f
         private const val TTS_INIT_TIMEOUT_MS = 10_000L
         private const val TTS_SPEAK_TIMEOUT_MS = 60_000L
     }

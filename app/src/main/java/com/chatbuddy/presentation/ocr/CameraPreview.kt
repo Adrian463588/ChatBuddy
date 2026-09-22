@@ -53,9 +53,11 @@ fun CameraPreview(
     val currentOnReady = rememberUpdatedState(onReady)
     val currentOnCapturedUri = rememberUpdatedState(onCapturedUri)
     val imageCaptureRef = remember { mutableStateOf<ImageCapture?>(null) }
+    val lastHandledRequest = remember { mutableStateOf(captureRequest) }
 
     LaunchedEffect(captureRequest) {
-        if (captureRequest == 0L) return@LaunchedEffect
+        if (captureRequest == 0L || captureRequest == lastHandledRequest.value) return@LaunchedEffect
+        lastHandledRequest.value = captureRequest
         val imageCapture = imageCaptureRef.value
         if (imageCapture == null) {
             currentOnError.value("Camera capture is not ready yet.")
@@ -186,8 +188,8 @@ fun CameraPreview(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .aspectRatio(4f / 3f)
-            .heightIn(min = 220.dp, max = 420.dp)
+            .aspectRatio(3f / 4f)
+            .heightIn(min = 320.dp, max = 580.dp)
     ) {
         AndroidView(
             factory = { previewView },

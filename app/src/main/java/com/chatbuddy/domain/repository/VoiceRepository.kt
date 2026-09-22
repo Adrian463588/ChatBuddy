@@ -9,4 +9,5 @@ interface VoiceRepository {
     suspend fun capabilities(languageTag: String): AppResult<VoiceCapabilities>
     fun transcribe(languageTag: String): Flow<VoiceTranscript>
     suspend fun speak(text: String, languageTag: String): AppResult<Unit>
+    suspend fun stopSpeaking(): AppResult<Unit> = AppResult.Success(Unit)
 }
